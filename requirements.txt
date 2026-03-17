@@ -1,0 +1,6 @@
+instagrapi
+python-dotenv
+pyotp
+supabase
+schedule
+requests

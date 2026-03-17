@@ -1,0 +1,36 @@
+# Environment — NEVER commit real credentials
+.env
+.env.local
+.env.*.local
+
+# Instagram sessions — contain auth tokens
+sessions/
+*.json.bak
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+engine_error.log
+engine_output.log
+scheduler.log
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated / temp
+migrate_data.sql
+.engine.pid
