@@ -99,3 +99,14 @@ class BrainReporter:
             print(f"Logged activity '{activity_type}' for @{bot_username}")
         except Exception as e:
             print(f"Error logging activity: {e}")
+
+    def report_heartbeat(self):
+        if not self.client: return
+        try:
+            self.client.table("system_status").upsert({
+                "id": "engine",
+                "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                "status": "ONLINE"
+            }).execute()
+        except Exception as e:
+            print(f"Error reporting heartbeat: {e}")

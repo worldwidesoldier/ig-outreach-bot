@@ -193,8 +193,10 @@ if __name__ == "__main__":
     schedule.every().day.at("13:30").do(daily_maintenance)
     schedule.every().day.at("21:00").do(daily_maintenance)
     
+    reporter = BrainReporter()
     while True:
         try:
+            reporter.report_heartbeat()
             schedule.run_pending()
         except Exception as e:
             log_error(f"Main loop exception: {e}")

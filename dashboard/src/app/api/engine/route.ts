@@ -7,19 +7,43 @@ const PID_FILE = path.join(process.cwd(), "../.engine.pid");
 const PYTHON_SCRIPT = path.join(process.cwd(), "../scheduler.py");
 const VENV_PYTHON = path.join(process.cwd(), "../venv/bin/python3");
 
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
 export async function GET() {
     let isRunning = false;
     let pid = null;
 
+    // 1. First check local process (for local dev)
     if (fs.existsSync(PID_FILE)) {
         pid = parseInt(fs.readFileSync(PID_FILE, "utf-8"));
         try {
-            // Check if process is still alive
             process.kill(pid, 0);
             isRunning = true;
         } catch (e) {
-            fs.unlinkSync(PID_FILE);
-            isRunning = false;
+            try { fs.unlinkSync(PID_FILE); } catch { }
+        }
+    }
+
+    // 2. If not found locally, check Distributed Heartbeat in Supabase
+    if (!isRunning) {
+        const { data } = await supabase
+            .from("system_status")
+            .select("last_heartbeat")
+            .eq("id", "engine")
+            .single();
+
+        if (data?.last_heartbeat) {
+            const lastHeartbeat = new Date(data.last_heartbeat).getTime();
+            const now = new Date().getTime();
+            // If heartbeat was within last 3 minutes, consider it online
+            if (now - lastHeartbeat < 180000) {
+                isRunning = true;
+            }
         }
     }
 
