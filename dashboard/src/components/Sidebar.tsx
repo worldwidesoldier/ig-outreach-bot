@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Target, Activity, Database, Mail, Inbox } from "lucide-react";
+import { LayoutDashboard, Users, Target, Activity, Database, Mail, Inbox, LogOut } from "lucide-react";
+import { logout } from "@/app/login/actions";
 
 export default function Sidebar() {
     const pathname = usePathname();
@@ -31,11 +32,10 @@ export default function Sidebar() {
                         <Link
                             key={link.href}
                             href={link.href}
-                            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-medium transition-all group ${
-                                isActive
-                                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/20"
-                                    : "text-slate-400 hover:text-slate-100 hover:bg-slate-800/50"
-                            }`}
+                            className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-medium transition-all group ${isActive
+                                ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/20"
+                                : "text-slate-400 hover:text-slate-100 hover:bg-slate-800/50"
+                                }`}
                         >
                             <link.icon className={`w-5 h-5 transition-colors ${isActive ? "text-indigo-400" : "group-hover:text-indigo-400"}`} />
                             {link.name}
@@ -43,6 +43,16 @@ export default function Sidebar() {
                     );
                 })}
             </nav>
+
+            <div className="mt-auto pt-6 border-t border-slate-800">
+                <button
+                    onClick={() => logout()}
+                    className="flex w-full items-center gap-3 px-3 py-2.5 rounded-lg font-medium text-slate-400 transition-all hover:text-red-400 hover:bg-red-500/10 group"
+                >
+                    <LogOut className="w-5 h-5 transition-colors group-hover:text-red-400" />
+                    Sair do Sistema
+                </button>
+            </div>
         </aside>
     );
 }

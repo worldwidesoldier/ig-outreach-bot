@@ -8,6 +8,20 @@
 
 **ATLAS IG** é um sistema de Instagram outreach automation B2B. O produto envia DMs personalizadas em escala para o público-alvo de clientes (promotores de eventos, negócios locais, agências), gerando um inbox lotado de respostas quentes que o cliente fecha manualmente.
 
+---
+
+## 👥 TIME & COLABORAÇÃO
+- **Solon Quinha:** Proprietário e desenvolvedor principal.
+- **Bernardo Belassis:** Desenvolvedor colaborador (foco em `belasis` e `fair-assist-admin`).
+
+---
+
+## 📂 REPOSITÓRIOS CHAVE (T1)
+1. **[ATLAS IG (ig-outreach-bot)](https://github.com/worldwidesoldier/ig-outreach-bot)** - Nosso foco atual de desenvolvimento e refatoração.
+2. **[Fair Assist Admin (bernardocds/Fair-Assit)](https://github.com/bernardocds/Fair-Assit)** - O repositório oficial para mudanças na Fair Assist (Colaboração com Bernardo).
+3. **[Belasis (bernardocds/belasis)](https://github.com/bernardocds/belasis)** - Projeto compartilhado com Bernardo.
+
+
 ### Fluxo do produto
 ```
 1. Bot segue o lead no Instagram
