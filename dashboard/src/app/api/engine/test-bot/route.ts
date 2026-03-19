@@ -2,10 +2,17 @@ import { NextResponse } from "next/server";
 import { spawn } from "child_process";
 import path from "path";
 
-const VENV_PYTHON = path.join(process.cwd(), "../venv/bin/python3");
-const ENGINE_DIR = path.join(process.cwd(), "..");
+// Use env vars for Python paths — avoids Turbopack following venv symlinks during build
+function getPaths() {
+    const engineDir = process.env.ENGINE_DIR ?? path.resolve(process.cwd(), "..");
+    return {
+        VENV_PYTHON: process.env.VENV_PYTHON_PATH ?? path.join(engineDir, "venv", "bin", "python3"),
+        ENGINE_DIR: engineDir,
+    };
+}
 
 export async function POST(req: Request) {
+    const { VENV_PYTHON, ENGINE_DIR } = getPaths();
     const { username } = await req.json();
     if (!username) return NextResponse.json({ error: "username required" }, { status: 400 });
 

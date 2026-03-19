@@ -3,9 +3,15 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 
-const PID_FILE = path.join(process.cwd(), "../.engine.pid");
-const PYTHON_SCRIPT = path.join(process.cwd(), "../scheduler.py");
-const VENV_PYTHON = path.join(process.cwd(), "../venv/bin/python3");
+// Use env vars for Python paths — avoids Turbopack following venv symlinks during build
+function getPaths() {
+    const engineDir = process.env.ENGINE_DIR ?? path.resolve(process.cwd(), "..");
+    return {
+        PID_FILE: path.join(engineDir, ".engine.pid"),
+        PYTHON_SCRIPT: path.join(engineDir, "scheduler.py"),
+        VENV_PYTHON: process.env.VENV_PYTHON_PATH ?? path.join(engineDir, "venv", "bin", "python3"),
+    };
+}
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -15,6 +21,7 @@ const supabase = createClient(
 );
 
 export async function GET() {
+    const { PID_FILE } = getPaths();
     let isRunning = false;
     let pid = null;
 
@@ -51,6 +58,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+    const { PID_FILE, PYTHON_SCRIPT, VENV_PYTHON } = getPaths();
     const { action } = await req.json();
 
     if (action === "start") {
