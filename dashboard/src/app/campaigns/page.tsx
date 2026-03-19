@@ -8,13 +8,20 @@ import NewCampaignModal from "@/components/NewCampaignModal";
 export default function CampaignsPage() {
     const [campaigns, setCampaigns] = useState<any[]>([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [fetchError, setFetchError] = useState<string | null>(null);
 
     async function fetchCampaigns() {
         const { data, error } = await supabase
             .from("campaigns")
             .select("*, lead_lists(name), message_templates(name)")
             .order("created_at", { ascending: false });
-        if (!error) setCampaigns(data || []);
+        console.log("[campaigns] data:", data, "error:", error);
+        if (error) {
+            setFetchError(error.message);
+        } else {
+            setFetchError(null);
+            setCampaigns(data || []);
+        }
     }
 
     useEffect(() => {
@@ -36,6 +43,12 @@ export default function CampaignsPage() {
                         New Campaign
                     </button>
                 </header>
+
+                {fetchError && (
+                    <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-rose-400 text-sm font-mono">
+                        ⚠ Supabase error: {fetchError}
+                    </div>
+                )}
 
                 <CampaignList campaigns={campaigns} />
 
