@@ -13,7 +13,7 @@ export default function CampaignsPage() {
     async function fetchCampaigns() {
         const { data, error } = await supabase
             .from("campaigns")
-            .select("*, lead_lists(name), message_templates(name)")
+            .select("*, lead_lists(name), message_templates!template_id(name)")
             .order("created_at", { ascending: false });
         console.log("[campaigns] data:", data, "error:", error);
         if (error) {
