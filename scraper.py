@@ -3,6 +3,7 @@ import json
 import math
 import time
 import random
+import threading
 from datetime import datetime, timezone, timedelta
 from instagrapi import Client
 from dotenv import load_dotenv
@@ -12,6 +13,115 @@ load_dotenv()
 
 from bot_utils import get_client
 
+DAILY_SCRAPE_LIMIT = 1000
+
+
+# ─── DAILY LIMIT HELPERS ──────────────────────────────────────────────────────
+
+def _get_daily_count(reporter, bot):
+    """
+    Returns current daily_scrape_count for this bot.
+    Resets to 0 if last_scrape_date is not today.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    last_date = bot.get('last_scrape_date')
+
+    if last_date != today:
+        reporter.client.table("accounts").update({
+            "daily_scrape_count": 0,
+            "last_scrape_date": today
+        }).eq("id", bot['id']).execute()
+        return 0
+
+    return bot.get('daily_scrape_count') or 0
+
+
+def _increment_daily_count(reporter, bot_id, amount):
+    """Fetches current count and increments it."""
+    fresh = reporter.client.table("accounts").select("daily_scrape_count, last_scrape_date").eq("id", bot_id).single().execute().data
+    today = datetime.now(timezone.utc).date().isoformat()
+    current = fresh.get('daily_scrape_count') or 0
+    reporter.client.table("accounts").update({
+        "daily_scrape_count": current + amount,
+        "last_scrape_date": today
+    }).eq("id", bot_id).execute()
+
+
+# ─── PER-BOT TASK PROCESSOR (runs in its own thread) ─────────────────────────
+
+def _process_bot_tasks(bot, tasks, reporter):
+    """
+    Processes a list of USERNAME tasks assigned to a single bot.
+    - Checks daily limit before each task
+    - Sleeps 60-180s between tasks
+    """
+    username = bot['username']
+
+    try:
+        client = get_client(
+            username=username,
+            password=bot['password'],
+            proxy=bot.get('proxy'),
+            two_factor_seed=bot.get('two_factor_seed'),
+            session_file=f"sessions/{username}.json"
+        )
+    except Exception as e:
+        print(f"❌ @{username} failed to initialize: {e}")
+        return
+
+    for i, task in enumerate(tasks):
+        task_id = task['id']
+        list_id = task['list_id']
+
+        # Re-fetch bot to get fresh daily count
+        fresh_bot = reporter.client.table("accounts").select(
+            "id, daily_scrape_count, last_scrape_date"
+        ).eq("id", bot['id']).single().execute().data
+
+        daily_count = _get_daily_count(reporter, fresh_bot)
+
+        if daily_count >= DAILY_SCRAPE_LIMIT:
+            print(f"  @{username} hit daily limit ({DAILY_SCRAPE_LIMIT}). Skipping {len(tasks) - i} remaining task(s).")
+            # Put remaining tasks back to PENDING so another bot can pick them up
+            remaining_ids = [t['id'] for t in tasks[i:]]
+            reporter.client.table("scrape_tasks").update({"status": "PENDING"}).in_("id", remaining_ids).execute()
+            break
+
+        # Cap amount so we don't exceed daily limit
+        amount = min(task['amount'], DAILY_SCRAPE_LIMIT - daily_count)
+
+        try:
+            reporter.client.table("scrape_tasks").update({"status": "RUNNING"}).eq("id", task_id).execute()
+
+            target = task['target_username']
+            print(f"🚀 @{username} → @{target} ({amount} followers) | daily: {daily_count}/{DAILY_SCRAPE_LIMIT}")
+
+            scrape_to_brain(client, target, list_id=list_id, amount=amount, task_id=task_id)
+
+            _increment_daily_count(reporter, bot['id'], amount)
+
+            reporter.client.table("scrape_tasks").update({
+                "status": "COMPLETED",
+                "processed_count": amount
+            }).eq("id", task_id).execute()
+
+            print(f"✅ @{username} done: @{target}")
+
+        except Exception as e:
+            print(f"❌ @{username} task failed ({task['target_username']}): {e}")
+            reporter.client.table("scrape_tasks").update({
+                "status": "FAILED",
+                "error_log": str(e)
+            }).eq("id", task_id).execute()
+
+        # Delay between tasks — never rush consecutive scrapes
+        if i < len(tasks) - 1:
+            delay = random.randint(60, 180)
+            print(f"  @{username} waiting {delay}s before next task...")
+            time.sleep(delay)
+
+
+# ─── MAIN ENTRY POINT ─────────────────────────────────────────────────────────
 
 def process_pending_tasks():
     reporter = BrainReporter()
@@ -24,56 +134,75 @@ def process_pending_tasks():
         print("No pending scrape tasks found.")
         return
 
-    bot_res = reporter.client.table("accounts").select("*").eq("status", "HEALTHY").limit(1).execute()
-    if not bot_res.data:
+    bot_res = reporter.client.table("accounts").select("*").eq("status", "HEALTHY").execute()
+    bots = bot_res.data
+
+    if not bots:
         print("No HEALTHY bots available to run scraper.")
         return
-    scraper_bot = bot_res.data[0]
 
-    try:
-        client = get_client(
-            username=scraper_bot['username'],
-            password=scraper_bot['password'],
-            proxy=scraper_bot.get('proxy'),
-            two_factor_seed=scraper_bot.get('two_factor_seed'),
-            session_file=f"sessions/{scraper_bot['username']}.json"
-        )
-    except Exception as e:
-        print(f"Failed to initialize scraper bot: {e}")
-        return
+    # Split by task type
+    username_tasks = [t for t in tasks if t.get('task_type', 'USERNAME') == 'USERNAME']
+    location_tasks = [t for t in tasks if t.get('task_type') == 'LOCATION']
 
-    for task in tasks:
-        task_id = task['id']
-        task_type = task.get('task_type', 'USERNAME')
-        list_id = task['list_id']
+    print(f"📋 {len(tasks)} tasks | {len(bots)} HEALTHY bots | {len(username_tasks)} USERNAME + {len(location_tasks)} LOCATION")
 
+    # ── Round-robin assignment of USERNAME tasks across bots ──────────────────
+    bot_task_map = {bot['id']: [] for bot in bots}
+    for i, task in enumerate(username_tasks):
+        assigned = bots[i % len(bots)]
+        bot_task_map[assigned['id']].append(task)
+
+    # ── Launch one thread per bot ─────────────────────────────────────────────
+    threads = []
+    for bot in bots:
+        assigned = bot_task_map[bot['id']]
+        if not assigned:
+            continue
+        print(f"  @{bot['username']} → {len(assigned)} task(s)")
+        t = threading.Thread(target=_process_bot_tasks, args=(bot, assigned, reporter), daemon=True)
+        threads.append(t)
+        t.start()
+
+    # ── LOCATION tasks — uses first available bot (unchanged behavior) ─────────
+    if location_tasks:
         try:
-            reporter.client.table("scrape_tasks").update({"status": "RUNNING"}).eq("id", task_id).execute()
-
-            if task_type == "LOCATION":
+            first_bot = bots[0]
+            client = get_client(
+                username=first_bot['username'],
+                password=first_bot['password'],
+                proxy=first_bot.get('proxy'),
+                two_factor_seed=first_bot.get('two_factor_seed'),
+                session_file=f"sessions/{first_bot['username']}.json"
+            )
+            for task in location_tasks:
+                task_id = task['id']
                 city_name = task['target_username']
                 radius_km = task.get('radius_km', 40)
                 recency_days = task.get('recency_days', 30)
-                print(f"🌍 Location scrape: {city_name} | {radius_km}km radius | last {recency_days} days")
-                count = scrape_by_location(client, city_name, radius_km, recency_days, list_id, task_id)
-                reporter.client.table("scrape_tasks").update({"status": "COMPLETED", "processed_count": count}).eq("id", task_id).execute()
-                print(f"✅ Location scrape complete: {count} leads found")
-
-            else:
-                target = task['target_username']
-                amount = task['amount']
-                print(f"🚀 Account scrape: @{target} ({amount} followers)")
-                scrape_to_brain(client, target, list_id=list_id, amount=amount, task_id=task_id)
-                reporter.client.table("scrape_tasks").update({"status": "COMPLETED", "processed_count": amount}).eq("id", task_id).execute()
-                print(f"✅ Account scrape complete: @{target}")
-
+                list_id = task['list_id']
+                try:
+                    reporter.client.table("scrape_tasks").update({"status": "RUNNING"}).eq("id", task_id).execute()
+                    print(f"🌍 Location scrape: {city_name} | {radius_km}km | last {recency_days} days")
+                    count = scrape_by_location(client, city_name, radius_km, recency_days, list_id, task_id)
+                    reporter.client.table("scrape_tasks").update({
+                        "status": "COMPLETED",
+                        "processed_count": count
+                    }).eq("id", task_id).execute()
+                    print(f"✅ Location done: {count} leads")
+                except Exception as e:
+                    reporter.client.table("scrape_tasks").update({
+                        "status": "FAILED",
+                        "error_log": str(e)
+                    }).eq("id", task_id).execute()
         except Exception as e:
-            print(f"❌ Task failed: {e}")
-            reporter.client.table("scrape_tasks").update({
-                "status": "FAILED",
-                "error_log": str(e)
-            }).eq("id", task_id).execute()
+            print(f"❌ Failed to initialize bot for location tasks: {e}")
 
+    for t in threads:
+        t.join(timeout=600)  # Max 10 min per bot thread
+
+
+# ─── LOCATION SCRAPING (unchanged) ───────────────────────────────────────────
 
 def _generate_grid_points(lat, lng, radius_km, step_km=4):
     """
@@ -82,9 +211,7 @@ def _generate_grid_points(lat, lng, radius_km, step_km=4):
     Returns list of (lat, lng) tuples.
     """
     points = []
-    # 1 degree latitude ≈ 111km
     lat_step = step_km / 111.0
-    # 1 degree longitude varies by latitude
     lng_step = step_km / (111.0 * math.cos(math.radians(lat)))
 
     lat_range = int(radius_km / step_km) + 1
@@ -94,7 +221,6 @@ def _generate_grid_points(lat, lng, radius_km, step_km=4):
         for j in range(-lng_range, lng_range + 1):
             point_lat = lat + (i * lat_step)
             point_lng = lng + (j * lng_step)
-            # Only include points within the radius circle
             dist = math.sqrt((i * step_km) ** 2 + (j * step_km) ** 2)
             if dist <= radius_km:
                 points.append((point_lat, point_lng))
@@ -104,15 +230,10 @@ def _generate_grid_points(lat, lng, radius_km, step_km=4):
 
 
 def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task_id):
-    """
-    Scrapes Instagram users who posted at locations within radius_km of city_name,
-    within the last recency_days days.
-    """
     from geopy.geocoders import Nominatim
 
     reporter = BrainReporter()
 
-    # 1. Geocode city name to lat/lng
     geolocator = Nominatim(user_agent="atlas_ig_scraper")
     location = geolocator.geocode(city_name)
     if not location:
@@ -121,13 +242,11 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
     center_lat, center_lng = location.latitude, location.longitude
     print(f"  📍 {city_name} → ({center_lat:.4f}, {center_lng:.4f})")
 
-    # 2. Generate grid of search points
     grid_points = _generate_grid_points(center_lat, center_lng, radius_km, step_km=4)
 
-    # 3. Collect all unique location IDs from the grid
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=recency_days)
     location_ids_seen = set()
-    all_leads = {}  # pk → lead_data, deduped by user
+    all_leads = {}
 
     for idx, (point_lat, point_lng) in enumerate(grid_points):
         try:
@@ -137,11 +256,9 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
                     continue
                 location_ids_seen.add(loc.pk)
 
-                # 4. Scrape recent posts from this location
                 try:
                     medias = client.location_medias_recent(loc.pk, amount=50)
                     for media in medias:
-                        # Filter by recency
                         taken_at = media.taken_at
                         if taken_at.tzinfo is None:
                             taken_at = taken_at.replace(tzinfo=timezone.utc)
@@ -164,32 +281,32 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
                     time.sleep(random.uniform(1, 3))
 
                 except Exception:
-                    pass  # Skip locations that error
+                    pass
 
         except Exception:
-            pass  # Skip grid points that error
+            pass
 
-        # Update progress every 10 grid points
         if (idx + 1) % 10 == 0:
             try:
                 reporter.client.table("scrape_tasks").update({"processed_count": len(all_leads)}).eq("id", task_id).execute()
-                print(f"  Progress: {idx+1}/{len(grid_points)} grid points | {len(all_leads)} unique users found")
+                print(f"  Progress: {idx+1}/{len(grid_points)} points | {len(all_leads)} unique users")
             except Exception:
                 pass
 
         time.sleep(random.uniform(0.5, 1.5))
 
-    # 5. Bulk upsert leads
     leads_list = list(all_leads.values())
     if leads_list:
         try:
             reporter.client.table("leads").upsert(leads_list, on_conflict="pk").execute()
-            print(f"  ✅ {len(leads_list)} leads saved to Brain")
+            print(f"  ✅ {len(leads_list)} leads saved")
         except Exception as e:
             print(f"  Error saving leads: {e}")
 
     return len(leads_list)
 
+
+# ─── USERNAME SCRAPING ────────────────────────────────────────────────────────
 
 def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=None):
     reporter = BrainReporter()
@@ -227,9 +344,9 @@ def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=N
     try:
         if new_leads:
             reporter.client.table("leads").upsert(new_leads, on_conflict="pk").execute()
-            print(f"Successfully synced {len(new_leads)} leads to the Brain.")
+            print(f"Successfully synced {len(new_leads)} leads.")
         else:
-            print("No leads identified during scrape.")
+            print("No leads found.")
     except Exception as e:
         print(f"Error syncing to Supabase: {e}")
 
