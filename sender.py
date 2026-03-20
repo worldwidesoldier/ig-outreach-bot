@@ -62,10 +62,10 @@ dm_lock = threading.Lock()
 # Warmed accounts (30+ days): 20 DMs/day max, 5/hour max
 # Sleep between DMs: 5-15 minutes (300-900s) — even on failure
 # Never burst: pacing matters MORE than total volume
-DAILY_LIMIT = 10          # Conservative — increase only after 30+ days warmup
-HOURLY_LIMIT = 3          # Max DMs per hour per bot
-MIN_SLEEP = 300           # 5 minutes minimum between DMs
-MAX_SLEEP = 900           # 15 minutes maximum between DMs
+DAILY_LIMIT = 9           # 3 cycles x 3 DMs = 9/day (13h, 18h, 21h)
+HOURLY_LIMIT = 3          # Max 3 DMs per cycle
+MIN_SLEEP = 240           # 4 minutes minimum between DMs
+MAX_SLEEP = 360           # 6 minutes maximum between DMs
 INTER_CAMPAIGN_SLEEP = 60 # 1 min between campaigns (even if no leads sent)
 # ──────────────────────────────────────────────────────────────────────────────
 

@@ -193,8 +193,8 @@ if __name__ == "__main__":
     # Schedule
     schedule.every(5).minutes.do(run_scraper_check)
     schedule.every(2).hours.do(check_fleet_health)
-    schedule.every().day.at("09:00").do(daily_maintenance)
-    schedule.every().day.at("13:30").do(daily_maintenance)
+    schedule.every().day.at("13:00").do(daily_maintenance)
+    schedule.every().day.at("18:00").do(daily_maintenance)
     schedule.every().day.at("21:00").do(daily_maintenance)
     
     reporter = BrainReporter()
