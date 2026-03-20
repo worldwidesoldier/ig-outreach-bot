@@ -85,6 +85,13 @@ def run_campaign_step(client, bot_username):
     reporter = BrainReporter()
     if not reporter.client: return
 
+    # Get bot ID first (needed to filter campaigns)
+    bot_res = reporter.client.table("accounts").select("id").eq("username", bot_username).single().execute()
+    if not bot_res.data:
+        print(f"Bot @{bot_username} not found in DB. Skipping.")
+        return
+    bot_id = bot_res.data["id"]
+
     # Fetch campaigns assigned to this bot OR campaigns with no specific account (shared)
     all_campaigns = reporter.client.table("campaigns") \
         .select("*, lead_lists(*), message_templates!campaigns_template_id_fkey(*)") \
@@ -95,13 +102,6 @@ def run_campaign_step(client, bot_username):
     if not campaigns:
         print("No active campaigns found.")
         return
-
-    # Get bot ID once
-    bot_res = reporter.client.table("accounts").select("id").eq("username", bot_username).single().execute()
-    if not bot_res.data:
-        print(f"Bot @{bot_username} not found in DB. Skipping.")
-        return
-    bot_id = bot_res.data["id"]
 
     # Check daily limit
     with dm_lock:
