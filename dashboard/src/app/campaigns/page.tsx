@@ -50,7 +50,7 @@ export default function CampaignsPage() {
                     </div>
                 )}
 
-                <CampaignList campaigns={campaigns} />
+                <CampaignList campaigns={campaigns} onRefresh={fetchCampaigns} />
 
                 <NewCampaignModal
                     isOpen={isModalOpen}
