@@ -6,7 +6,7 @@ import schedule
 import traceback
 from datetime import datetime
 from brain_reporter import BrainReporter, is_ig_auth_error
-from warmup import run_warmup_protocol
+from warmup import run_warmup_protocol, run_recovery_warmup
 from sender import run_campaign_step, run_followup_step
 from scraper import process_pending_tasks
 from bot_utils import get_client
@@ -42,7 +42,11 @@ def daily_maintenance():
                     session_file=f"sessions/{username}.json"
                 )
 
-                if bot['status'] == "WARMING_UP":
+                if bot['status'] == "AT_RISK":
+                    # Recovery protocol — gentler warmup for flagged/recovered accounts
+                    current_session = (bot.get('warmup_day') or 0) + 1
+                    run_recovery_warmup(client, current_session, username, niche_tags=bot.get('niche_tags'))
+                elif bot['status'] == "WARMING_UP":
                     current_day = (bot.get('warmup_day') or 0) + 1
                     run_warmup_protocol(client, current_day, username, niche_tags=bot.get('niche_tags'))
                 elif bot['status'] == "HEALTHY":
