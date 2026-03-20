@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Target, List, Mail, Play } from "lucide-react";
+import { X, Target, List, Mail, Play, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface NewCampaignModalProps {
@@ -14,23 +14,25 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
     const [name, setName] = useState("");
     const [listId, setListId] = useState("");
     const [templateId, setTemplateId] = useState("");
+    const [accountId, setAccountId] = useState("");
     const [lists, setLists] = useState<any[]>([]);
     const [templates, setTemplates] = useState<any[]>([]);
+    const [accounts, setAccounts] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
-        if (isOpen) {
-            fetchData();
-        }
+        if (isOpen) fetchData();
     }, [isOpen]);
 
     async function fetchData() {
-        const [listsRes, templatesRes] = await Promise.all([
+        const [listsRes, templatesRes, accountsRes] = await Promise.all([
             supabase.from("lead_lists").select("*").order("name"),
-            supabase.from("message_templates").select("*").order("name")
+            supabase.from("message_templates").select("*").order("name"),
+            supabase.from("accounts").select("id, username").eq("status", "HEALTHY").order("username"),
         ]);
         if (listsRes.data) setLists(listsRes.data);
         if (templatesRes.data) setTemplates(templatesRes.data);
+        if (accountsRes.data) setAccounts(accountsRes.data);
     }
 
     async function handleSubmit(e: React.FormEvent) {
@@ -42,13 +44,14 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
             name,
             list_id: listId,
             template_id: templateId,
+            account_id: accountId || null,
             status: "ACTIVE"
         });
 
         if (!error) {
+            setName(""); setListId(""); setTemplateId(""); setAccountId("");
             onSuccess();
             onClose();
-            // Auto-start engine
             fetch("/api/engine", { method: "POST", body: JSON.stringify({ action: "start" }) }).catch(() => { });
         }
         setLoading(false);
@@ -58,8 +61,8 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-            <div className="bg-slate-900 border border-slate-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-                <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+            <div className="bg-slate-900 border border-slate-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden">
+                <div className="p-6 border-b border-slate-800 flex justify-between items-center">
                     <div>
                         <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
                             <Target className="w-5 h-5 text-indigo-500" />
@@ -72,7 +75,7 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
                     </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6 space-y-6">
+                <form onSubmit={handleSubmit} className="p-6 space-y-5">
                     <div className="space-y-2">
                         <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Campaign Name</label>
                         <input
@@ -86,9 +89,8 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                                <List className="w-3 h-3" />
-                                Select Lead List
+                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                <List className="w-3 h-3" /> Lead List
                             </label>
                             <select
                                 required
@@ -104,9 +106,8 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
                         </div>
 
                         <div className="space-y-2">
-                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                                <Mail className="w-3 h-3" />
-                                Select Template
+                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                                <Mail className="w-3 h-3" /> Template
                             </label>
                             <select
                                 required
@@ -122,7 +123,24 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
                         </div>
                     </div>
 
-                    <div className="pt-4">
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                            <User className="w-3 h-3" /> Bot Account
+                            <span className="text-slate-600 font-normal normal-case tracking-normal">(optional — leave blank to use all HEALTHY bots)</span>
+                        </label>
+                        <select
+                            value={accountId}
+                            onChange={(e) => setAccountId(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none appearance-none"
+                        >
+                            <option value="">All HEALTHY bots ({accounts.length} available)</option>
+                            {accounts.map(acc => (
+                                <option key={acc.id} value={acc.id}>@{acc.username}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="pt-2">
                         <button
                             type="submit"
                             disabled={loading}
