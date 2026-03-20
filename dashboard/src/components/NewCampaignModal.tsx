@@ -19,6 +19,7 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
     const [templates, setTemplates] = useState<any[]>([]);
     const [accounts, setAccounts] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
+    const [submitError, setSubmitError] = useState<string | null>(null);
 
     useEffect(() => {
         if (isOpen) fetchData();
@@ -40,15 +41,19 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
         if (!name || !listId || !templateId) return;
 
         setLoading(true);
-        const { error } = await supabase.from("campaigns").insert({
-            name,
-            list_id: listId,
-            template_id: templateId,
-            account_id: accountId || null,
-            status: "ACTIVE"
-        });
+        setSubmitError(null);
 
-        if (!error) {
+        // Build insert payload — only include account_id if selected
+        const payload: any = { name, list_id: listId, template_id: templateId, status: "ACTIVE" };
+        if (accountId) payload.account_id = accountId;
+
+        console.log("[campaign] inserting:", payload);
+        const { data, error } = await supabase.from("campaigns").insert(payload).select();
+        console.log("[campaign] result:", data, "error:", error);
+
+        if (error) {
+            setSubmitError(error.message);
+        } else {
             setName(""); setListId(""); setTemplateId(""); setAccountId("");
             onSuccess();
             onClose();
@@ -139,6 +144,12 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
                             ))}
                         </select>
                     </div>
+
+                    {submitError && (
+                        <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg px-4 py-3 text-rose-400 text-sm">
+                            ⚠ {submitError}
+                        </div>
+                    )}
 
                     <div className="pt-2">
                         <button
