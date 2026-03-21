@@ -54,23 +54,33 @@ export default function InboxPage() {
 
         if (!messages) { setLoading(false); return; }
 
-        // Get all unique sender PKs to look up lead info
-        const senderPks = [...new Set(messages.map(m => m.sender_username))];
+        // Collect all PKs to look up: both sender_username and other_user_pk
+        const allPks = [...new Set([
+            ...messages.map(m => m.sender_username),
+            ...messages.map(m => m.other_user_pk).filter(Boolean),
+        ])];
+
         const { data: leads } = await supabase
             .from("leads")
             .select("pk, username, full_name, status")
-            .in("pk", senderPks);
+            .in("pk", allPks);
 
-        const leadMap = Object.fromEntries((leads || []).map(l => [l.pk, l]));
+        const leadMap = Object.fromEntries((leads || []).map(l => [String(l.pk), l]));
 
-        // Enrich messages
-        const enriched: Message[] = messages.map(m => ({
-            ...m,
-            bot_username: (m.accounts as any)?.username,
-            lead_username: leadMap[m.sender_username]?.username,
-            lead_full_name: leadMap[m.sender_username]?.full_name,
-            lead_status: leadMap[m.sender_username]?.status,
-        }));
+        // Enrich messages — check both sender and other_user_pk for lead info
+        const enriched: Message[] = messages.map(m => {
+            const leadFromSender = leadMap[String(m.sender_username)];
+            const leadFromOther = leadMap[String(m.other_user_pk)];
+            const lead = leadFromSender || leadFromOther;
+            return {
+                ...m,
+                bot_username: (m.accounts as any)?.username,
+                lead_username: lead?.username,
+                lead_full_name: lead?.full_name,
+                lead_status: lead?.status,
+                _other_user_pk: m.other_user_pk,
+            };
+        });
 
         // Group into threads
         const threadMap: Record<string, Thread> = {};

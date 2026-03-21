@@ -37,13 +37,14 @@ class InboxManager:
 
                 for msg in thread.messages:
                     if msg.item_type != 'text': continue
-                    
+
                     # 1. Save to Inbox
                     msg_data = {
                         "account_id": bot_id,
                         "thread_id": thread_id,
                         "message_id": msg.id,
                         "sender_username": str(msg.user_id),
+                        "other_user_pk": other_user_id,  # Always store the lead's PK regardless of who sent
                         "text": msg.text,
                         "timestamp": msg.timestamp.isoformat()
                     }
