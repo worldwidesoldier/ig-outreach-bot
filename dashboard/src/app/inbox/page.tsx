@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { Inbox, MessageCircle, Bot } from "lucide-react";
+import { Inbox, MessageCircle, Bot, Instagram } from "lucide-react";
 
 interface Message {
     id: string;
@@ -79,12 +79,12 @@ export default function InboxPage() {
                 threadMap[msg.thread_id] = {
                     thread_id: msg.thread_id,
                     bot_username: msg.bot_username || "unknown",
-                    lead_username: msg.lead_username || msg.sender_username,
-                    lead_full_name: msg.lead_full_name || "",
-                    lead_status: msg.lead_status || "",
+                    lead_username: "",
+                    lead_full_name: "",
+                    lead_status: "",
                     last_message: msg.text,
                     last_timestamp: msg.timestamp,
-                    unread: msg.lead_status === "REPLIED",
+                    unread: false,
                     messages: [],
                 };
             }
@@ -93,13 +93,29 @@ export default function InboxPage() {
             threadMap[msg.thread_id].last_timestamp = msg.timestamp;
         }
 
+        // Fix: scan ALL messages per thread to find the lead (not the bot)
+        // Bot messages have sender_username = bot's IG user_id (not in leads table)
+        // Lead messages have lead_username defined
+        for (const thread of Object.values(threadMap)) {
+            const leadMsg = thread.messages.find(m => m.lead_username);
+            if (leadMsg) {
+                thread.lead_username = leadMsg.lead_username!;
+                thread.lead_full_name = leadMsg.lead_full_name || "";
+                thread.lead_status = leadMsg.lead_status || "";
+                thread.unread = leadMsg.lead_status === "REPLIED";
+            } else {
+                // Lead not in our DB (maybe they DM'd us first) — show PK as fallback
+                const nonBotMsg = thread.messages.find(m => !m.bot_username || m.lead_username !== undefined);
+                thread.lead_username = nonBotMsg?.sender_username || thread.thread_id.substring(0, 8);
+            }
+        }
+
         const sorted = Object.values(threadMap).sort(
             (a, b) => new Date(b.last_timestamp).getTime() - new Date(a.last_timestamp).getTime()
         );
 
         setThreads(sorted);
 
-        // Keep selected thread in sync
         if (selectedThread) {
             const updated = sorted.find(t => t.thread_id === selectedThread.thread_id);
             if (updated) setSelectedThread(updated);
@@ -115,16 +131,26 @@ export default function InboxPage() {
         QUALIFIED:   "bg-indigo-500/15 text-indigo-400 border-indigo-500/20",
     };
 
+    const repliedCount = threads.filter(t => t.lead_status === "REPLIED").length;
+
     return (
         <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
             <div className="max-w-7xl mx-auto w-full p-8 flex-1 flex flex-col gap-6">
-                <header>
-                    <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm uppercase tracking-widest">
-                        <Inbox className="w-4 h-4" />
-                        Command Center
+                <header className="flex items-start justify-between">
+                    <div>
+                        <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm uppercase tracking-widest">
+                            <Inbox className="w-4 h-4" />
+                            Command Center
+                        </div>
+                        <h1 className="text-4xl font-extrabold tracking-tight mt-1">Unified Inbox</h1>
+                        <p className="text-slate-400 mt-1">All replies from all accounts in one place</p>
                     </div>
-                    <h1 className="text-4xl font-extrabold tracking-tight mt-1">Unified Inbox</h1>
-                    <p className="text-slate-400 mt-1">All replies from all accounts in one place</p>
+                    {repliedCount > 0 && (
+                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-5 py-3 text-center">
+                            <p className="text-2xl font-extrabold text-emerald-400">{repliedCount}</p>
+                            <p className="text-xs text-emerald-500 mt-0.5">Replied 🔥</p>
+                        </div>
+                    )}
                 </header>
 
                 <div className="flex-1 grid grid-cols-12 gap-4 min-h-[600px]">
@@ -152,26 +178,32 @@ export default function InboxPage() {
                                         className={`w-full text-left px-4 py-3.5 hover:bg-slate-800/40 transition-colors ${selectedThread?.thread_id === thread.thread_id ? "bg-indigo-500/10 border-l-2 border-indigo-500" : ""}`}
                                     >
                                         <div className="flex items-start gap-3">
-                                            <div className="w-9 h-9 rounded-full bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-400 flex-shrink-0 border border-slate-700">
+                                            {/* Avatar */}
+                                            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
                                                 {(thread.lead_username || "?").substring(0, 2).toUpperCase()}
                                             </div>
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-center justify-between gap-2">
                                                     <span className="font-semibold text-slate-200 text-sm truncate">
-                                                        @{thread.lead_username || thread.thread_id.substring(0, 8)}
+                                                        {thread.lead_full_name
+                                                            ? `${thread.lead_full_name}`
+                                                            : `@${thread.lead_username}`}
                                                     </span>
                                                     <span className="text-[10px] text-slate-600 flex-shrink-0">
                                                         {new Date(thread.last_timestamp).toLocaleDateString()}
                                                     </span>
                                                 </div>
+                                                {thread.lead_full_name && (
+                                                    <p className="text-[10px] text-indigo-400 truncate">@{thread.lead_username}</p>
+                                                )}
                                                 <div className="flex items-center gap-1.5 mt-0.5">
                                                     <Bot className="w-3 h-3 text-slate-600 flex-shrink-0" />
-                                                    <span className="text-[10px] text-slate-600 truncate">@{thread.bot_username}</span>
+                                                    <span className="text-[10px] text-slate-600 truncate">via @{thread.bot_username}</span>
                                                 </div>
                                                 <p className="text-xs text-slate-500 truncate mt-1">{thread.last_message}</p>
                                                 {thread.lead_status && statusColor[thread.lead_status] && (
                                                     <span className={`inline-block mt-1.5 text-[9px] font-bold border px-1.5 py-0.5 rounded-full ${statusColor[thread.lead_status]}`}>
-                                                        {thread.lead_status}
+                                                        {thread.lead_status === "REPLIED" ? "🔥 REPLIED" : thread.lead_status}
                                                     </span>
                                                 )}
                                             </div>
@@ -193,18 +225,36 @@ export default function InboxPage() {
                             <>
                                 {/* Header */}
                                 <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-                                    <div>
-                                        <div className="font-bold text-slate-100">@{selectedThread.lead_username}</div>
-                                        {selectedThread.lead_full_name && (
-                                            <div className="text-xs text-slate-500">{selectedThread.lead_full_name}</div>
-                                        )}
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-600 to-purple-600 flex items-center justify-center text-sm font-bold text-white">
+                                            {(selectedThread.lead_username || "?").substring(0, 2).toUpperCase()}
+                                        </div>
+                                        <div>
+                                            <div className="font-bold text-slate-100">
+                                                {selectedThread.lead_full_name || `@${selectedThread.lead_username}`}
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                {selectedThread.lead_full_name && (
+                                                    <span className="text-xs text-indigo-400">@{selectedThread.lead_username}</span>
+                                                )}
+                                                <a
+                                                    href={`https://instagram.com/${selectedThread.lead_username}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="text-xs text-slate-500 hover:text-indigo-400 flex items-center gap-1 transition-colors"
+                                                >
+                                                    <Instagram className="w-3 h-3" />
+                                                    View profile
+                                                </a>
+                                            </div>
+                                        </div>
                                     </div>
                                     <div className="flex items-center gap-2 text-xs text-slate-500">
                                         <Bot className="w-3.5 h-3.5" />
                                         via @{selectedThread.bot_username}
                                         {selectedThread.lead_status && statusColor[selectedThread.lead_status] && (
                                             <span className={`font-bold border px-2 py-0.5 rounded-full ${statusColor[selectedThread.lead_status]}`}>
-                                                {selectedThread.lead_status}
+                                                {selectedThread.lead_status === "REPLIED" ? "🔥 REPLIED" : selectedThread.lead_status}
                                             </span>
                                         )}
                                     </div>
@@ -213,10 +263,7 @@ export default function InboxPage() {
                                 {/* Messages */}
                                 <div className="flex-1 overflow-y-auto p-6 space-y-3">
                                     {selectedThread.messages.map(msg => {
-                                        const isFromLead = msg.sender_username === selectedThread.messages.find(
-                                            m => m.lead_username
-                                        )?.sender_username;
-                                        const fromLead = !!msg.lead_username || isFromLead;
+                                        const fromLead = !!msg.lead_username;
 
                                         return (
                                             <div key={msg.message_id} className={`flex ${fromLead ? "justify-start" : "justify-end"}`}>
@@ -227,6 +274,8 @@ export default function InboxPage() {
                                                 }`}>
                                                     <p>{msg.text}</p>
                                                     <p className={`text-[10px] mt-1 ${fromLead ? "text-slate-500" : "text-indigo-300"}`}>
+                                                        {fromLead ? `@${msg.lead_username}` : `@${msg.bot_username}`}
+                                                        {" · "}
                                                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                                     </p>
                                                 </div>
@@ -238,7 +287,7 @@ export default function InboxPage() {
                                 {/* Reply note */}
                                 <div className="px-6 py-3 border-t border-slate-800 bg-slate-900/60">
                                     <p className="text-xs text-slate-600 text-center">
-                                        Replies are sent manually via the Instagram app on @{selectedThread.bot_username}
+                                        Reply manually via the Instagram app on @{selectedThread.bot_username}
                                     </p>
                                 </div>
                             </>
