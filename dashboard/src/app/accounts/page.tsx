@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import AccountTable from "@/components/AccountTable";
 import BulkAddModal from "@/components/BulkAddModal";
 import BulkProxyModal from "@/components/BulkProxyModal";
-import { Copy, Loader2, Plus, Database, Search, Globe, UserPlus, Trash2, FileX } from "lucide-react";
+import { Copy, Loader2, Plus, Database, Search, Globe, UserPlus, Trash2, FileX, Image } from "lucide-react";
 import EngineControl from "@/components/EngineControl";
 
 export default function AccountsPage() {
@@ -21,6 +21,10 @@ export default function AccountsPage() {
     const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
     const [deleteLoading, setDeleteLoading] = useState(false);
     const [deletePostsLoading, setDeletePostsLoading] = useState(false);
+    const [publishLoading, setPublishLoading] = useState(false);
+    const [showPostForm, setShowPostForm] = useState(false);
+    const [postImageUrl, setPostImageUrl] = useState("");
+    const [postCaption, setPostCaption] = useState("");
 
     async function fetchAccounts() {
         setLoading(true);
@@ -80,6 +84,28 @@ export default function AccountsPage() {
             setNotification({ type: 'success', message: `${selectedIds.length} conta(s) deletada(s) com sucesso.` });
         }
         setDeleteLoading(false);
+    }
+
+    async function handlePublishPost() {
+        if (!postImageUrl || selectedIds.length === 0) return;
+        setPublishLoading(true);
+        setNotification(null);
+        try {
+            const usernames = accounts.filter(a => selectedIds.includes(a.id)).map(a => a.username);
+            const res = await fetch("/api/accounts/clone", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: "post", targetBotUsernames: usernames, imageUrl: postImageUrl, caption: postCaption })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Failed");
+            setNotification({ type: "success", message: data.message });
+            setPostImageUrl(""); setPostCaption(""); setShowPostForm(false); setSelectedIds([]);
+        } catch (err: any) {
+            setNotification({ type: "error", message: err.message });
+        } finally {
+            setPublishLoading(false);
+        }
     }
 
     async function handleMirror() {
@@ -205,50 +231,105 @@ export default function AccountsPage() {
                         </div>
 
                         {selectedIds.length > 0 && (
-                            <div className="flex items-center gap-3 bg-indigo-500/10 p-1.5 rounded-xl border border-indigo-500/20 animate-in zoom-in-95 backdrop-blur-md">
-                                <span className="text-xs font-bold text-indigo-400 px-3">{selectedIds.length} SELECTED</span>
-                                <div className="h-6 w-px bg-indigo-500/20" />
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="text"
-                                        placeholder="Target Profile"
-                                        className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 w-44 font-medium"
-                                        value={sourceUser}
-                                        onChange={(e) => setSourceUser(e.target.value)}
-                                    />
-                                    <button
-                                        onClick={handleMirror}
-                                        disabled={mirrorLoading || !sourceUser}
-                                        className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all"
-                                    >
-                                        {mirrorLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />}
-                                        MIRROR
-                                    </button>
-                                    <button
-                                        onClick={() => setIsProxyModalOpen(true)}
-                                        className="bg-slate-800 hover:bg-slate-700 px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all border border-slate-700"
-                                    >
-                                        <Globe className="w-3 h-3 text-indigo-400" />
-                                        PROXY
-                                    </button>
+                            <div className="space-y-2 animate-in zoom-in-95">
+                                <div className="flex items-center gap-3 bg-indigo-500/10 p-1.5 rounded-xl border border-indigo-500/20 backdrop-blur-md flex-wrap">
+                                    <span className="text-xs font-bold text-indigo-400 px-3">{selectedIds.length} SELECTED</span>
                                     <div className="h-6 w-px bg-indigo-500/20" />
-                                    <button
-                                        onClick={handleDeletePosts}
-                                        disabled={deletePostsLoading}
-                                        className="bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all text-amber-400 hover:text-amber-300 disabled:opacity-50"
-                                    >
-                                        {deletePostsLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileX className="w-3 h-3" />}
-                                        DELETE POSTS
-                                    </button>
-                                    <button
-                                        onClick={handleDeleteSelected}
-                                        disabled={deleteLoading}
-                                        className="bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all text-rose-400 hover:text-rose-300 disabled:opacity-50"
-                                    >
-                                        {deleteLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                                        DELETE
-                                    </button>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        {/* Mirror */}
+                                        <input
+                                            type="text"
+                                            placeholder="@source_profile"
+                                            className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 w-40 font-medium"
+                                            value={sourceUser}
+                                            onChange={(e) => setSourceUser(e.target.value)}
+                                        />
+                                        <button
+                                            onClick={handleMirror}
+                                            disabled={mirrorLoading || !sourceUser}
+                                            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all"
+                                        >
+                                            {mirrorLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />}
+                                            MIRROR
+                                        </button>
+
+                                        <div className="h-6 w-px bg-slate-700" />
+
+                                        {/* Post Publisher toggle */}
+                                        <button
+                                            onClick={() => setShowPostForm(v => !v)}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all border ${showPostForm ? "bg-purple-600/20 border-purple-500/40 text-purple-300" : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"}`}
+                                        >
+                                            <Image className="w-3 h-3" />
+                                            POST
+                                        </button>
+
+                                        <button
+                                            onClick={() => setIsProxyModalOpen(true)}
+                                            className="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all border border-slate-700"
+                                        >
+                                            <Globe className="w-3 h-3 text-indigo-400" />
+                                            PROXY
+                                        </button>
+
+                                        <div className="h-6 w-px bg-slate-700" />
+
+                                        <button
+                                            onClick={handleDeletePosts}
+                                            disabled={deletePostsLoading}
+                                            className="bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all text-amber-400 disabled:opacity-50"
+                                        >
+                                            {deletePostsLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileX className="w-3 h-3" />}
+                                            DEL POSTS
+                                        </button>
+                                        <button
+                                            onClick={handleDeleteSelected}
+                                            disabled={deleteLoading}
+                                            className="bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all text-rose-400 disabled:opacity-50"
+                                        >
+                                            {deleteLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                                            DELETE
+                                        </button>
+                                    </div>
                                 </div>
+
+                                {/* Post Publisher inline form */}
+                                {showPostForm && (
+                                    <div className="bg-purple-500/5 border border-purple-500/20 rounded-xl p-4 space-y-3">
+                                        <p className="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-2">
+                                            <Image className="w-3.5 h-3.5" />
+                                            Publish Post to {selectedIds.length} bot(s) — 3-5 min stagger between each
+                                        </p>
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                            <div className="md:col-span-1">
+                                                <input
+                                                    type="url"
+                                                    placeholder="Image URL (https://...)"
+                                                    value={postImageUrl}
+                                                    onChange={(e) => setPostImageUrl(e.target.value)}
+                                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                                />
+                                            </div>
+                                            <div className="md:col-span-1">
+                                                <input
+                                                    type="text"
+                                                    placeholder="Caption (optional)"
+                                                    value={postCaption}
+                                                    onChange={(e) => setPostCaption(e.target.value)}
+                                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                                />
+                                            </div>
+                                            <button
+                                                onClick={handlePublishPost}
+                                                disabled={publishLoading || !postImageUrl}
+                                                className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded-lg py-2 text-xs font-bold flex items-center justify-center gap-2 transition-all"
+                                            >
+                                                {publishLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Image className="w-3.5 h-3.5" />}
+                                                Publish to {selectedIds.length} bot(s)
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

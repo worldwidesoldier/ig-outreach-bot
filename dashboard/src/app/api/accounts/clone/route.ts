@@ -2,41 +2,57 @@ import { NextResponse } from "next/server";
 import { spawn } from "child_process";
 import path from "path";
 
-const VENV_PYTHON = path.join(process.cwd(), "../venv/bin/python3");
+function getPaths() {
+    const engineDir = process.env.ENGINE_DIR ?? path.resolve(process.cwd(), "..");
+    return {
+        script: path.join(engineDir, "cloner.py"),
+        python: process.env.VENV_PYTHON_PATH ?? path.join(engineDir, "venv", "bin", "python3"),
+        cwd: engineDir,
+    };
+}
 
 export async function POST(req: Request) {
     try {
-        const { sourceUsername, targetBotUsernames } = await req.json();
+        const body = await req.json();
+        const { sourceUsername, targetBotUsernames, mode, imageUrl, caption } = body;
 
-        if (!sourceUsername || !targetBotUsernames || targetBotUsernames.length === 0) {
-            return NextResponse.json({ error: "Missing source username or target bots" }, { status: 400 });
+        const { script, python, cwd } = getPaths();
+        const targets = (targetBotUsernames || []).join(",");
+
+        if (!targets) {
+            return NextResponse.json({ error: "No target bots selected" }, { status: 400 });
         }
 
-        // Validate inputs to prevent path traversal
-        if (!/^[a-zA-Z0-9._]+$/.test(sourceUsername)) {
+        // Validate inputs
+        if (sourceUsername && !/^[a-zA-Z0-9._]+$/.test(sourceUsername)) {
             return NextResponse.json({ error: "Invalid source username format" }, { status: 400 });
         }
 
-        const scriptPath = path.join(process.cwd(), "..", "cloner.py");
-        const targets = targetBotUsernames.join(",");
+        const spawnMode = mode || "profile";
+        const args = [script, "--mode", spawnMode, "--targets", targets];
 
-        console.log(`Command Center: Triggering Mirror of @${sourceUsername} to ${targetBotUsernames.length} bots`);
+        if (spawnMode === "profile") {
+            if (!sourceUsername) return NextResponse.json({ error: "sourceUsername required" }, { status: 400 });
+            args.push("--source", sourceUsername);
+        } else if (spawnMode === "post") {
+            if (!imageUrl) return NextResponse.json({ error: "imageUrl required" }, { status: 400 });
+            args.push("--image-url", imageUrl);
+            if (caption) args.push("--caption", caption);
+        }
 
-        // Use spawn with array args (safe against command injection) + venv python
-        const child = spawn(VENV_PYTHON, [scriptPath, "--source", sourceUsername, "--targets", targets], {
-            cwd: path.join(process.cwd(), ".."),
-            detached: true,
-            stdio: "ignore",
-        });
+        console.log(`[Clone API] mode=${spawnMode} targets=${targets}`);
 
+        const child = spawn(python, args, { cwd, detached: true, stdio: "ignore" });
         child.unref();
 
-        return NextResponse.json({
-            success: true,
-            message: `Profile mirror task started for ${targetBotUsernames.length} bots from @${sourceUsername}. Check logs for details.`
-        });
+        const messages: Record<string, string> = {
+            profile: `Profile mirror started for ${targetBotUsernames.length} bot(s) from @${sourceUsername}. Runs with 3-5 min stagger between each account.`,
+            post: `Post publishing started for ${targetBotUsernames.length} bot(s). Runs with 3-5 min stagger between each account.`,
+        };
+
+        return NextResponse.json({ success: true, message: messages[spawnMode] });
     } catch (error: any) {
-        console.error("API Error:", error);
+        console.error("Clone API Error:", error);
         return NextResponse.json({ error: error.message }, { status: 500 });
     }
 }
