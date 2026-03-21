@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Target, List, Mail, Play, User } from "lucide-react";
+import { X, Target, List, Mail, Play, User, Clock } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface NewCampaignModalProps {
@@ -14,6 +14,8 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
     const [name, setName] = useState("");
     const [listId, setListId] = useState("");
     const [templateId, setTemplateId] = useState("");
+    const [followupTemplateId, setFollowupTemplateId] = useState("");
+    const [followupDelayDays, setFollowupDelayDays] = useState(2);
     const [accountId, setAccountId] = useState("");
     const [lists, setLists] = useState<any[]>([]);
     const [templates, setTemplates] = useState<any[]>([]);
@@ -43,18 +45,25 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
         setLoading(true);
         setSubmitError(null);
 
-        // Build insert payload — only include account_id if selected
-        const payload: any = { name, list_id: listId, template_id: templateId, status: "ACTIVE" };
+        const payload: any = {
+            name,
+            list_id: listId,
+            template_id: templateId,
+            status: "ACTIVE",
+        };
         if (accountId) payload.account_id = accountId;
+        if (followupTemplateId) {
+            payload.followup_template_id = followupTemplateId;
+            payload.followup_delay_days = followupDelayDays;
+        }
 
-        console.log("[campaign] inserting:", payload);
         const { data, error } = await supabase.from("campaigns").insert(payload).select();
-        console.log("[campaign] result:", data, "error:", error);
 
         if (error) {
             setSubmitError(error.message);
         } else {
-            setName(""); setListId(""); setTemplateId(""); setAccountId("");
+            setName(""); setListId(""); setTemplateId("");
+            setFollowupTemplateId(""); setFollowupDelayDays(2); setAccountId("");
             onSuccess();
             onClose();
             fetch("/api/engine", { method: "POST", body: JSON.stringify({ action: "start" }) }).catch(() => { });
@@ -80,7 +89,8 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
                     </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6 space-y-5">
+                <form onSubmit={handleSubmit} className="p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+                    {/* Name */}
                     <div className="space-y-2">
                         <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Campaign Name</label>
                         <input
@@ -92,6 +102,7 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
                         />
                     </div>
 
+                    {/* List + Template */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="space-y-2">
                             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
@@ -112,7 +123,7 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
 
                         <div className="space-y-2">
                             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                                <Mail className="w-3 h-3" /> Template
+                                <Mail className="w-3 h-3" /> Step 1 Template
                             </label>
                             <select
                                 required
@@ -128,10 +139,58 @@ export default function NewCampaignModal({ isOpen, onClose, onSuccess }: NewCamp
                         </div>
                     </div>
 
+                    {/* Follow-up */}
+                    <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-4 space-y-4">
+                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                            <Clock className="w-3.5 h-3.5 text-purple-400" />
+                            Follow-up (Step 2)
+                            <span className="text-slate-600 font-normal normal-case tracking-normal">— optional</span>
+                        </p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Follow-up Template</label>
+                                <select
+                                    value={followupTemplateId}
+                                    onChange={(e) => setFollowupTemplateId(e.target.value)}
+                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 focus:ring-2 focus:ring-purple-500 outline-none appearance-none"
+                                >
+                                    <option value="">No follow-up</option>
+                                    {templates.map(tpl => (
+                                        <option key={tpl.id} value={tpl.id}>{tpl.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="space-y-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Send after (days)</label>
+                                <select
+                                    value={followupDelayDays}
+                                    onChange={(e) => setFollowupDelayDays(Number(e.target.value))}
+                                    disabled={!followupTemplateId}
+                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-slate-200 focus:ring-2 focus:ring-purple-500 outline-none appearance-none disabled:opacity-40"
+                                >
+                                    <option value={1}>1 day</option>
+                                    <option value={2}>2 days</option>
+                                    <option value={3}>3 days</option>
+                                    <option value={5}>5 days</option>
+                                    <option value={7}>7 days</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        {followupTemplateId && (
+                            <p className="text-xs text-purple-400/80">
+                                Leads que não responderem ao Step 1 receberão o Step 2 automaticamente após {followupDelayDays} dia{followupDelayDays > 1 ? "s" : ""}.
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Bot Account */}
                     <div className="space-y-2">
                         <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
                             <User className="w-3 h-3" /> Bot Account
-                            <span className="text-slate-600 font-normal normal-case tracking-normal">(optional — leave blank to use all HEALTHY bots)</span>
+                            <span className="text-slate-600 font-normal normal-case tracking-normal">(opcional)</span>
                         </label>
                         <select
                             value={accountId}
