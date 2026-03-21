@@ -26,14 +26,15 @@ def parse_spintax(text: str) -> str:
         options = match.group(1).split("|")
         return random.choice(options)
 
-    # Keep resolving until no more spintax left (handles nested)
-    while re.search(r'\{([^{}]+)\}', text):
-        # Only resolve if it contains pipes (it's spintax, not a variable)
-        def smart_replace(match):
-            inner = match.group(1)
-            if "|" in inner:
-                return random.choice(inner.split("|"))
-            return match.group(0)  # Leave variables like {full_name} untouched
+    # Only resolve spintax patterns that contain pipes — variables like {full_name} are ignored
+    def smart_replace(match):
+        inner = match.group(1)
+        if "|" in inner:
+            return random.choice(inner.split("|"))
+        return match.group(0)  # Leave {full_name}, {username} etc untouched
+
+    # Keep resolving until no spintax patterns with pipes remain
+    while re.search(r'\{[^{}]*\|[^{}]*\}', text):
         text = re.sub(r'\{([^{}]+)\}', smart_replace, text)
     return text
 
@@ -180,8 +181,8 @@ def run_campaign_step(client, bot_username):
                 msg = parse_spintax(template['content'])
                 msg = msg.replace("{full_name}", name).replace("{username}", lead['username'])
 
-                # 2. Pre-DM interaction — like a post to warm up the lead
-                pre_dm_interaction(client, lead['pk'], lead['username'])
+                # 2. Pre-DM interaction — disabled (user_medias() hangs without timeout)
+                # pre_dm_interaction(client, lead['pk'], lead['username'])
 
                 print(f"  → Sending to @{lead['username']}...")
                 reporter.log_activity(bot_username, "DM_SEND", f"Sending DM to @{lead['username']}")

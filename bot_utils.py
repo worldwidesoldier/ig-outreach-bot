@@ -59,6 +59,7 @@ def get_client(username, password, proxy=None, two_factor_seed=None, session_fil
 
     # 1. Humanized Delay Settings
     cl.delay_range = [2, 7] # Random 2-7 seconds between requests
+    cl.request_timeout = 60  # 60s timeout on all Instagram API calls — prevents infinite hangs
 
     # 2. Auto-resolve TOTP challenges (Authentication App)
     # When Instagram asks for 2FA code, bot generates it automatically.
