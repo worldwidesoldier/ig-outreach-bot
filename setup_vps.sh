@@ -1,6 +1,6 @@
 #!/bin/bash
 # ATLAS IG — VPS Setup Script
-# Ubuntu 22.04 | Run as root: bash setup_vps.sh
+# Ubuntu 22.04/24.04 | Run as root: bash setup_vps.sh
 set -e
 
 REPO="https://github.com/worldwidesoldier/ig-outreach-bot.git"
@@ -15,13 +15,13 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "[1/7] Installing system dependencies..."
 apt-get update -qq
-apt-get install -y -qq git python3.11 python3.11-venv python3-pip curl nginx ufw
+apt-get install -y -qq git python3 python3-venv python3-pip curl nginx ufw
 
 # Node.js 22
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null 2>&1
 apt-get install -y -qq nodejs
 
-echo "  ✓ Python $(python3.11 --version) | Node $(node --version)"
+echo "  ✓ Python $(python3 --version) | Node $(node --version)"
 
 # ── 2. Create service user ────────────────────────────────────────
 echo ""
@@ -46,7 +46,7 @@ echo "  ✓ Repo at $APP_DIR"
 echo ""
 echo "[4/7] Setting up Python environment..."
 cd "$APP_DIR"
-sudo -u "$SERVICE_USER" python3.11 -m venv venv
+sudo -u "$SERVICE_USER" python3 -m venv venv
 sudo -u "$SERVICE_USER" venv/bin/pip install -q --upgrade pip
 sudo -u "$SERVICE_USER" venv/bin/pip install -q -r requirements.txt
 mkdir -p "$APP_DIR/sessions"

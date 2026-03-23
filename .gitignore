@@ -34,3 +34,4 @@ Thumbs.db
 # Generated / temp
 migrate_data.sql
 .engine.pid
+.vercel
