@@ -3,12 +3,22 @@ import pyotp
 import time
 import random
 import json
+import threading
 from instagrapi import Client
 from instagrapi.exceptions import ClientError, LoginRequired
 from dotenv import load_dotenv
 from brain_reporter import BrainReporter, is_ig_auth_error
 
 load_dotenv()
+
+_session_locks: dict = {}
+_session_lock_guard = threading.Lock()
+
+def _get_session_lock(username: str) -> threading.Lock:
+    with _session_lock_guard:
+        if username not in _session_locks:
+            _session_locks[username] = threading.Lock()
+        return _session_locks[username]
 
 def human_delay(min_sec=2, max_sec=5):
     """Simulates natural user thinking time."""
@@ -97,9 +107,8 @@ def get_client(username, password, proxy=None, two_factor_seed=None, session_fil
         proxy = proxy.strip()
         cl.set_proxy(proxy)
     else:
-        env_proxy = os.getenv("IG_PROXY")
-        if env_proxy:
-            cl.set_proxy(env_proxy)
+        print(f"⚠️  @{username}: SEM PROXY configurado — pulando bot para evitar IP compartilhado.")
+        return None
 
     # 3. Device Fingerprinting (The "Market Leader" approach)
     # Fetch device settings from Supabase if they exist
@@ -129,7 +138,8 @@ def get_client(username, password, proxy=None, two_factor_seed=None, session_fil
     session_valid = False
     if session_file and os.path.exists(session_file):
         try:
-            cl.load_settings(session_file)
+            with _get_session_lock(username):
+                cl.load_settings(session_file)
             # Verify session is still active without a full re-login
             cl.get_timeline_feed()
             session_valid = True
@@ -161,7 +171,8 @@ def get_client(username, password, proxy=None, two_factor_seed=None, session_fil
 
             if session_file:
                 os.makedirs(os.path.dirname(session_file) if os.path.dirname(session_file) else "sessions", exist_ok=True)
-                cl.dump_settings(session_file)
+                with _get_session_lock(username):
+                    cl.dump_settings(session_file)
 
             print(f"✅ Bot @{username} fresh login OK.")
 

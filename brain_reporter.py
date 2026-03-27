@@ -72,6 +72,11 @@ class BrainReporter:
             data["proxy"] = proxy
         if warmup_day is not None:
             data["warmup_day"] = warmup_day
+        elif status == "AT_RISK":
+            # Reset warmup counter so recovery protocol starts from session 1
+            # If we don't reset this, a bot at warmup_day=21 would skip directly
+            # to recovery phase 3 instead of starting from passive scroll (phase 1)
+            data["warmup_day"] = 0
         if profile_pic_url:
             data["profile_pic_url"] = profile_pic_url
         if full_name:
@@ -80,6 +85,19 @@ class BrainReporter:
         try:
             self.client.table("accounts").update(data).eq("username", username).execute()
             print(f"Logged status '{status}' for bot @{username}")
+            # Auto-alert on critical statuses
+            if status in ("CHALLENGE", "BANNED"):
+                self.send_alert(
+                    "CRITICAL",
+                    f"@{username} → {status}",
+                    f"Account needs manual attention. Check the War Room dashboard."
+                )
+            elif status == "AT_RISK":
+                self.send_alert(
+                    "WARNING",
+                    f"@{username} → AT_RISK",
+                    f"Action block detected. Recovery warmup will start automatically."
+                )
         except Exception as e:
             print(f"Error reporting to brain: {e}")
 
@@ -129,6 +147,52 @@ class BrainReporter:
             print(f"Logged activity '{activity_type}' for @{bot_username}")
         except Exception as e:
             print(f"Error logging activity: {e}")
+
+    def log_cycle(self, start: datetime, end: datetime, bots_processed: int):
+        if not self.client: return
+        try:
+            self.client.table("system_status").upsert({
+                "id": "engine",
+                "last_cycle_start": start.isoformat(),
+                "last_cycle_end": end.isoformat(),
+                "last_cycle_duration_seconds": int((end - start).total_seconds()),
+                "last_cycle_bots_processed": bots_processed
+            }).execute()
+        except Exception as e:
+            print(f"Error logging cycle: {e}")
+
+    def send_alert(self, level: str, title: str, message: str):
+        """
+        Sends a webhook alert for critical events (CHALLENGE, BANNED, engine down, etc.)
+        Set ALERT_WEBHOOK_URL in .env to enable. Supports Slack and Discord webhook formats.
+        If not configured, just prints to stdout.
+        level: "CRITICAL", "WARNING", or "INFO"
+        """
+        import urllib.request
+        import json as _json
+
+        icons = {"CRITICAL": "🚨", "WARNING": "⚠️", "INFO": "ℹ️"}
+        icon = icons.get(level, "🔔")
+        full_message = f"{icon} *{level}* — {title}\n{message}"
+
+        print(f"[ALERT] {full_message}")
+
+        webhook_url = os.getenv("ALERT_WEBHOOK_URL")
+        if not webhook_url:
+            return  # No webhook configured — print-only mode
+
+        try:
+            # Slack format (also works for Discord with /slack suffix)
+            payload = _json.dumps({"text": full_message}).encode("utf-8")
+            req = urllib.request.Request(
+                webhook_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            print(f"Alert webhook failed: {e}")
 
     def report_heartbeat(self):
         if not self.client: return

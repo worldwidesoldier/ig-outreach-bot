@@ -13,7 +13,20 @@ export async function POST(req: Request) {
 
         const lines = rawText.split("\n").filter((l: string) => l.trim() !== "");
         const accounts = lines.map((line: string) => {
-            const parts = line.split(":").map(s => s.trim());
+            const trimmed = line.trim();
+            if (!trimmed) return null;
+
+            // Extract proxy URL first (contains multiple ":" which would break a naive split)
+            // Proxy always starts with http:// or https://
+            const proxyMatch = trimmed.match(/(https?:\/\/[^\s]+)/);
+            const proxy: string | null = proxyMatch ? proxyMatch[1] : null;
+
+            // Remove the proxy portion before splitting on ":"
+            const withoutProxy = proxy
+                ? trimmed.replace(proxy, "").replace(/::+/g, ":").replace(/:$/, "")
+                : trimmed;
+
+            const parts = withoutProxy.split(":").map((s: string) => s.trim()).filter(Boolean);
             if (parts.length < 2) return null;
 
             // Basic parsing: username:password
@@ -24,22 +37,13 @@ export async function POST(req: Request) {
             let email_password: string | null = null;
             let two_factor_seed: string | null = null;
             let backup_codes: string | null = null;
-            let proxy: string | null = null;
 
             // Smart detection for other parts
             parts.slice(2).forEach(part => {
-                const lowerPart = part.toLowerCase();
-                if (lowerPart.startsWith("http://") || lowerPart.startsWith("https://")) {
-                    // Validate proxy format: must be http(s)://[user:pass@]host:port
-                    const proxyRegex = /^https?:\/\/(.+:.+@)?[^:\s]+:\d+$/;
-                    if (proxyRegex.test(part)) {
-                        proxy = part;
-                    } else {
-                        console.warn(`Invalid proxy format skipped: "${part}"`);
-                    }
-                } else if (part.includes("@")) {
+                if (part.includes("@")) {
                     email = part;
-                } else if (part.length >= 16 && /^[a-z0-9]+$/i.test(part)) {
+                } else if (part.length >= 16 && /^[A-Z2-7]+=*$/.test(part)) {
+                    // 2FA seed: base32 — uppercase letters and digits 2-7
                     two_factor_seed = part;
                 } else if (part.includes(",") || (part.length < 10 && /^\d+$/.test(part))) {
                     backup_codes = part;

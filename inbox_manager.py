@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 from brain_reporter import BrainReporter
 
 class InboxManager:
-    def __init__(self, client, bot_username):
+    def __init__(self, client, bot_username, reporter=None):
         self.client = client
         self.bot_username = bot_username
-        self.reporter = BrainReporter()
+        self.reporter = reporter if reporter is not None else BrainReporter()
         
     def sync_inbox(self):
         """
@@ -24,8 +24,8 @@ class InboxManager:
         bot_id = bot_res.data["id"]
         
         try:
-            threads = self.client.direct_threads(amount=10) # Last 10 threads
-            
+            threads = self.client.direct_threads(amount=50)  # Enough for 50-bot fleet
+
             for thread in threads:
                 thread_id = thread.id
                 # Get the other user's PK (it's a list for group chats, but usually 1 for DMs)
@@ -34,6 +34,10 @@ class InboxManager:
                     if str(user.pk) != str(self.client.user_id):
                         other_user_id = str(user.pk)
                         break
+
+                # Skip threads where we can't identify the other party
+                if not other_user_id:
+                    continue
 
                 for msg in thread.messages:
                     if msg.item_type != 'text': continue
@@ -48,7 +52,7 @@ class InboxManager:
                         "text": msg.text,
                         "timestamp": msg.timestamp.isoformat()
                     }
-                    
+
                     try:
                         self.reporter.client.table("inbox_messages").upsert(msg_data, on_conflict="message_id").execute()
                     except Exception as e:

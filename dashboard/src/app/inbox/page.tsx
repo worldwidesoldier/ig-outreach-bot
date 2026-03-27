@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { Inbox, MessageCircle, Bot, Instagram } from "lucide-react";
 
@@ -9,6 +9,7 @@ interface Message {
     thread_id: string;
     message_id: string;
     sender_username: string;
+    other_user_pk?: string;
     text: string;
     timestamp: string;
     account_id: string;
@@ -16,6 +17,7 @@ interface Message {
     lead_username?: string;
     lead_full_name?: string;
     lead_status?: string;
+    is_from_lead: boolean;
 }
 
 interface Thread {
@@ -34,6 +36,8 @@ export default function InboxPage() {
     const [threads, setThreads] = useState<Thread[]>([]);
     const [selectedThread, setSelectedThread] = useState<Thread | null>(null);
     const [loading, setLoading] = useState(true);
+    const [filter, setFilter] = useState<"all" | "replied">("all");
+    const messagesEndRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         fetchInbox();
@@ -45,6 +49,11 @@ export default function InboxPage() {
 
         return () => { supabase.removeChannel(channel); };
     }, []);
+
+    // Auto-scroll to latest message whenever the selected thread changes or new messages arrive
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [selectedThread?.thread_id, selectedThread?.messages.length]);
 
     async function fetchInbox() {
         const { data: messages } = await supabase
@@ -67,7 +76,7 @@ export default function InboxPage() {
 
         const leadMap = Object.fromEntries((leads || []).map(l => [String(l.pk), l]));
 
-        // Enrich messages — check both sender and other_user_pk for lead info
+        // Enrich messages — is_from_lead = true only when the SENDER is the lead (not the bot)
         const enriched: Message[] = messages.map(m => {
             const leadFromSender = leadMap[String(m.sender_username)];
             const leadFromOther = leadMap[String(m.other_user_pk)];
@@ -78,7 +87,7 @@ export default function InboxPage() {
                 lead_username: lead?.username,
                 lead_full_name: lead?.full_name,
                 lead_status: lead?.status,
-                _other_user_pk: m.other_user_pk,
+                is_from_lead: !!leadFromSender, // true only when sender IS the lead
             };
         });
 
@@ -120,9 +129,12 @@ export default function InboxPage() {
             }
         }
 
-        const sorted = Object.values(threadMap).sort(
-            (a, b) => new Date(b.last_timestamp).getTime() - new Date(a.last_timestamp).getTime()
-        );
+        // REPLIED threads always surface first, then by recency
+        const sorted = Object.values(threadMap).sort((a, b) => {
+            if (a.lead_status === "REPLIED" && b.lead_status !== "REPLIED") return -1;
+            if (b.lead_status === "REPLIED" && a.lead_status !== "REPLIED") return 1;
+            return new Date(b.last_timestamp).getTime() - new Date(a.last_timestamp).getTime();
+        });
 
         setThreads(sorted);
 
@@ -144,16 +156,16 @@ export default function InboxPage() {
     const repliedCount = threads.filter(t => t.lead_status === "REPLIED").length;
 
     return (
-        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-            <div className="max-w-7xl mx-auto w-full p-8 flex-1 flex flex-col gap-6">
-                <header className="flex items-start justify-between">
+        <div className="h-screen bg-slate-950 text-slate-100 flex flex-col overflow-hidden">
+            <div className="max-w-7xl mx-auto w-full px-8 pt-6 pb-0 flex flex-col gap-4 flex-1 min-h-0">
+                {/* Header — fixed height, never grows */}
+                <header className="flex items-center justify-between flex-shrink-0">
                     <div>
                         <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm uppercase tracking-widest">
                             <Inbox className="w-4 h-4" />
                             Command Center
                         </div>
-                        <h1 className="text-4xl font-extrabold tracking-tight mt-1">Unified Inbox</h1>
-                        <p className="text-slate-400 mt-1">All replies from all accounts in one place</p>
+                        <h1 className="text-3xl font-extrabold tracking-tight mt-0.5">Unified Inbox</h1>
                     </div>
                     {repliedCount > 0 && (
                         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-5 py-3 text-center">
@@ -163,13 +175,26 @@ export default function InboxPage() {
                     )}
                 </header>
 
-                <div className="flex-1 grid grid-cols-12 gap-4 min-h-[600px]">
+                {/* Panels — take all remaining height, no page scroll */}
+                <div className="flex-1 min-h-0 grid grid-cols-12 gap-4 pb-6">
 
-                    {/* Thread List */}
-                    <div className="col-span-4 bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden flex flex-col">
+                    {/* Thread List — fixed height, internal scroll */}
+                    <div className="col-span-4 bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden flex flex-col min-h-0">
                         <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-                            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Conversations</span>
-                            <span className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">{threads.length}</span>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setFilter("all")}
+                                    className={`text-xs font-bold px-2.5 py-1 rounded-full transition-colors ${filter === "all" ? "bg-indigo-500/20 text-indigo-400" : "text-slate-500 hover:text-slate-300"}`}
+                                >
+                                    All ({threads.length})
+                                </button>
+                                <button
+                                    onClick={() => setFilter("replied")}
+                                    className={`text-xs font-bold px-2.5 py-1 rounded-full transition-colors ${filter === "replied" ? "bg-emerald-500/20 text-emerald-400" : "text-slate-500 hover:text-slate-300"}`}
+                                >
+                                    🔥 Replies ({repliedCount})
+                                </button>
+                            </div>
                         </div>
 
                         {loading ? (
@@ -181,11 +206,17 @@ export default function InboxPage() {
                             </div>
                         ) : (
                             <div className="flex-1 overflow-y-auto divide-y divide-slate-800/50">
-                                {threads.map(thread => (
+                                {threads.filter(t => filter === "all" || t.lead_status === "REPLIED").map(thread => (
                                     <button
                                         key={thread.thread_id}
                                         onClick={() => setSelectedThread(thread)}
-                                        className={`w-full text-left px-4 py-3.5 hover:bg-slate-800/40 transition-colors ${selectedThread?.thread_id === thread.thread_id ? "bg-indigo-500/10 border-l-2 border-indigo-500" : ""}`}
+                                        className={`w-full text-left px-4 py-3.5 hover:bg-slate-800/40 transition-colors border-l-2 ${
+                                            selectedThread?.thread_id === thread.thread_id
+                                                ? "bg-indigo-500/10 border-indigo-500"
+                                                : thread.lead_status === "REPLIED"
+                                                ? "bg-emerald-500/5 border-emerald-500"
+                                                : "border-transparent"
+                                        }`}
                                     >
                                         <div className="flex items-start gap-3">
                                             {/* Avatar */}
@@ -224,8 +255,8 @@ export default function InboxPage() {
                         )}
                     </div>
 
-                    {/* Conversation View */}
-                    <div className="col-span-8 bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden flex flex-col">
+                    {/* Conversation View — fixed height, internal scroll */}
+                    <div className="col-span-8 bg-slate-900/50 border border-slate-800 rounded-2xl overflow-hidden flex flex-col min-h-0">
                         {!selectedThread ? (
                             <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-600">
                                 <MessageCircle className="w-12 h-12 opacity-20" />
@@ -271,27 +302,40 @@ export default function InboxPage() {
                                 </div>
 
                                 {/* Messages */}
-                                <div className="flex-1 overflow-y-auto p-6 space-y-3">
+                                <div className="flex-1 overflow-y-auto p-4 space-y-2">
                                     {selectedThread.messages.map(msg => {
-                                        const fromLead = !!msg.lead_username;
+                                        const fromLead = msg.is_from_lead;
+                                        const initials = (selectedThread.lead_full_name || selectedThread.lead_username || "?")
+                                            .substring(0, 2).toUpperCase();
+                                        const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
                                         return (
-                                            <div key={msg.message_id} className={`flex ${fromLead ? "justify-start" : "justify-end"}`}>
-                                                <div className={`max-w-[70%] px-4 py-2.5 rounded-2xl text-sm ${
-                                                    fromLead
-                                                        ? "bg-slate-800 text-slate-200 rounded-tl-sm"
-                                                        : "bg-indigo-600 text-white rounded-tr-sm"
-                                                }`}>
-                                                    <p>{msg.text}</p>
-                                                    <p className={`text-[10px] mt-1 ${fromLead ? "text-slate-500" : "text-indigo-300"}`}>
-                                                        {fromLead ? `@${msg.lead_username}` : `@${msg.bot_username}`}
-                                                        {" · "}
-                                                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                                    </p>
+                                            <div key={msg.message_id} className={`flex items-end gap-2 ${fromLead ? "justify-start" : "justify-end"}`}>
+                                                {/* Lead avatar — only on their messages */}
+                                                {fromLead && (
+                                                    <div className="w-7 h-7 rounded-full bg-gradient-to-br from-slate-600 to-slate-700 flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0 mb-4">
+                                                        {initials}
+                                                    </div>
+                                                )}
+
+                                                <div className={`flex flex-col ${fromLead ? "items-start" : "items-end"} max-w-[68%]`}>
+                                                    <div className={`px-4 py-2.5 text-sm leading-relaxed ${
+                                                        fromLead
+                                                            ? "bg-slate-700 text-slate-100 rounded-2xl rounded-bl-sm"
+                                                            : "bg-indigo-600 text-white rounded-2xl rounded-br-sm"
+                                                    }`}>
+                                                        {msg.text}
+                                                    </div>
+                                                    <span className="text-[10px] text-slate-600 mt-1 px-1">{time}</span>
                                                 </div>
+
+                                                {/* Bot spacer — keeps alignment symmetric */}
+                                                {!fromLead && <div className="w-7 flex-shrink-0" />}
                                             </div>
                                         );
                                     })}
+                                    {/* Scroll anchor */}
+                                    <div ref={messagesEndRef} />
                                 </div>
 
                                 {/* Reply note */}
@@ -308,3 +352,4 @@ export default function InboxPage() {
         </div>
     );
 }
+

@@ -35,8 +35,14 @@ MIN_SLEEP     = 240  # 4 min minimum between DMs
 MAX_SLEEP     = 360  # 6 min maximum between DMs
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Thread-safe lock for daily limit checks across concurrent bot threads
-dm_lock = threading.Lock()
+_bot_dm_locks: dict = {}
+_bot_dm_lock_guard = threading.Lock()
+
+def _get_bot_dm_lock(bot_id: str) -> threading.Lock:
+    with _bot_dm_lock_guard:
+        if bot_id not in _bot_dm_locks:
+            _bot_dm_locks[bot_id] = threading.Lock()
+        return _bot_dm_locks[bot_id]
 
 
 def _get_daily_count(reporter, bot_id) -> int:
@@ -65,22 +71,46 @@ def _get_hourly_count(reporter, bot_id) -> int:
 
 def recover_stuck_leads():
     """
-    Resets leads stuck in SENDING status back to QUALIFIED.
+    Resets leads stuck in SENDING status back to the correct state.
+    If the lead already has a step-1 SUCCESS log (message was sent but DB update crashed),
+    set to SENT. Otherwise set to QUALIFIED so it gets retried.
     Called on engine startup to recover from crashes or mid-cycle restarts.
     """
     reporter = BrainReporter()
     if not reporter.client: return
     try:
-        res = reporter.client.table("leads").update({"status": "QUALIFIED"}).eq("status", "SENDING").execute()
-        if res.data:
-            print(f"♻️  Recovered {len(res.data)} leads stuck in SENDING → QUALIFIED")
+        stuck = reporter.client.table("leads").select("id, pk").eq("status", "SENDING").execute()
+        if not stuck.data:
+            return
+
+        sent_count = 0
+        qualified_count = 0
+        for lead in stuck.data:
+            # Check if a step-1 SUCCESS was already logged for this lead
+            log = reporter.client.table("outreach_logs") \
+                .select("id", count="exact") \
+                .eq("lead_id", lead["id"]) \
+                .eq("sequence_step", 1) \
+                .eq("status", "SUCCESS") \
+                .execute()
+            if log.count and log.count > 0:
+                # Message was sent — move to SENT, not QUALIFIED (avoids re-send)
+                reporter.client.table("leads").update({"status": "SENT"}).eq("id", lead["id"]).execute()
+                sent_count += 1
+            else:
+                reporter.client.table("leads").update({"status": "QUALIFIED"}).eq("id", lead["id"]).execute()
+                qualified_count += 1
+
+        if sent_count or qualified_count:
+            print(f"♻️  Recovered stuck leads: {sent_count} → SENT, {qualified_count} → QUALIFIED")
     except Exception as e:
         print(f"⚠️  Could not recover stuck leads: {e}")
 
 
-def run_campaign_step(client, bot_username):
+def run_campaign_step(client, bot_username, reporter=None):
     """Send Step 1 DMs for all active campaigns assigned to this bot."""
-    reporter = BrainReporter()
+    if reporter is None:
+        reporter = BrainReporter()
     if not reporter.client: return
 
     bot_res = reporter.client.table("accounts").select("id").eq("username", bot_username).single().execute()
@@ -89,17 +119,12 @@ def run_campaign_step(client, bot_username):
         return
     bot_id = bot_res.data["id"]
 
-    # Check daily limit upfront (thread-safe)
-    with dm_lock:
-        if _get_daily_count(reporter, bot_id) >= DAILY_LIMIT:
-            print(f"Bot @{bot_username} reached daily DM limit ({DAILY_LIMIT}). Skipping.")
-            return
-
-    all_campaigns = reporter.client.table("campaigns") \
+    # Fetch campaigns assigned to this bot OR shared campaigns (account_id = NULL)
+    campaigns = reporter.client.table("campaigns") \
         .select("*, lead_lists(*), message_templates!campaigns_template_id_fkey(*)") \
         .eq("status", "ACTIVE") \
+        .or_(f"account_id.eq.{bot_id},account_id.is.null") \
         .execute().data
-    campaigns = [c for c in all_campaigns if c.get("account_id") == bot_id or c.get("account_id") is None]
 
     if not campaigns:
         print(f"No active campaigns for @{bot_username}.")
@@ -115,14 +140,6 @@ def run_campaign_step(client, bot_username):
             print(f"Campaign '{campaign['name']}' missing List or Template. Skipping.")
             continue
 
-        # Re-check limits before each campaign
-        if _get_daily_count(reporter, bot_id) >= DAILY_LIMIT:
-            print(f"Bot @{bot_username} hit daily limit. Stopping.")
-            break
-        if _get_hourly_count(reporter, bot_id) >= HOURLY_LIMIT:
-            print(f"Bot @{bot_username} hit hourly limit ({HOURLY_LIMIT}/hr). Stopping.")
-            break
-
         leads = reporter.client.table("leads") \
             .select("*") \
             .eq("list_id", list_id) \
@@ -136,62 +153,79 @@ def run_campaign_step(client, bot_username):
         print(f"Bot @{bot_username} starting outreach for Campaign: {campaign['name']}...")
 
         for lead in leads:
-            # Re-check before every single DM
-            if _get_daily_count(reporter, bot_id) >= DAILY_LIMIT:
-                print(f"Bot @{bot_username} hit daily limit. Stopping.")
-                return
-            if _get_hourly_count(reporter, bot_id) >= HOURLY_LIMIT:
-                print(f"Bot @{bot_username} hit hourly limit. Stopping.")
-                return
-
             sleep_time = random.randint(MIN_SLEEP, MAX_SLEEP)
-            try:
-                # Mark as SENDING to prevent double-processing across threads
-                reporter.client.table("leads").update({"status": "SENDING"}).eq("id", lead["id"]).execute()
 
-                name = lead['full_name'] or lead['username']
-                msg = parse_spintax(template['content'])
-                msg = msg.replace("{full_name}", name).replace("{username}", lead['username'])
+            # Acquire lock only for the check+send+log window — release during sleep
+            with _get_bot_dm_lock(bot_id):
+                if _get_daily_count(reporter, bot_id) >= DAILY_LIMIT:
+                    print(f"Bot @{bot_username} hit daily limit. Stopping.")
+                    return
+                if _get_hourly_count(reporter, bot_id) >= HOURLY_LIMIT:
+                    print(f"Bot @{bot_username} hit hourly limit. Stopping.")
+                    return
 
-                print(f"  → Sending to @{lead['username']}...")
-                reporter.log_activity(bot_username, "DM_SEND", f"Sending DM to @{lead['username']}")
+                try:
+                    # Atomic claim: only succeeds if status is still QUALIFIED.
+                    # If another bot already claimed this lead, data will be empty — skip.
+                    claim = reporter.client.table("leads") \
+                        .update({"status": "SENDING"}) \
+                        .eq("id", lead["id"]) \
+                        .eq("status", "QUALIFIED") \
+                        .execute()
+                    if not claim.data:
+                        print(f"  ⏭️  @{lead['username']} already claimed by another bot — skipping.")
+                        continue
 
-                client.direct_send(msg, [int(lead['pk'])])
+                    name = lead['full_name'] or lead['username']
+                    msg = parse_spintax(template['content'])
+                    msg = msg.replace("{full_name}", name).replace("{username}", lead['username'])
 
-                reporter.client.table("leads").update({"status": "SENT"}).eq("id", lead["id"]).execute()
-                reporter.log_outreach(bot_username, lead["pk"], "SUCCESS", message=msg, sequence_step=1)
-                dms_sent_this_session += 1
+                    print(f"  → Sending to @{lead['username']}...")
+                    reporter.log_activity(bot_username, "DM_SEND", f"Sending DM to @{lead['username']}")
 
-                print(f"  ✓ Sent. Sleeping {sleep_time//60}m{sleep_time%60}s before next DM...")
+                    client.direct_send(msg, [int(lead['pk'])])
 
-            except Exception as e:
-                print(f"  ✗ Error with @{lead['username']}: {e}")
-                # Reset to QUALIFIED so it gets retried next cycle
-                reporter.client.table("leads").update({"status": "QUALIFIED"}).eq("id", lead["id"]).execute()
-                reporter.log_outreach(bot_username, lead["pk"], "FAILED", error=str(e), sequence_step=1)
+                    reporter.client.table("leads").update({"status": "SENT"}).eq("id", lead["id"]).execute()
+                    reporter.log_outreach(bot_username, lead["pk"], "SUCCESS", message=msg, sequence_step=1)
+                    dms_sent_this_session += 1
 
+                    print(f"  ✓ Sent. Sleeping {sleep_time//60}m{sleep_time%60}s before next DM...")
+
+                except Exception as e:
+                    print(f"  ✗ Error with @{lead['username']}: {e}")
+                    reporter.client.table("leads").update({"status": "QUALIFIED"}).eq("id", lead["id"]).execute()
+                    reporter.log_outreach(bot_username, lead["pk"], "FAILED", error=str(e), sequence_step=1)
+
+            # Sleep OUTSIDE the lock — other threads can check/send for this bot during this pause
             time.sleep(sleep_time)
 
     print(f"Bot @{bot_username} outreach complete. {dms_sent_this_session} DMs sent this session.")
 
 
-def run_followup_step(client, bot_username):
+def run_followup_step(client, bot_username, reporter=None):
     """Send Step 2 follow-ups to leads who haven't replied after X days."""
-    reporter = BrainReporter()
+    if reporter is None:
+        reporter = BrainReporter()
     if not reporter.client: return
 
     bot_res = reporter.client.table("accounts").select("id").eq("username", bot_username).single().execute()
     if not bot_res.data: return
     bot_id = bot_res.data["id"]
 
-    # Follow-ups share the same daily limit as Step 1
-    if _get_daily_count(reporter, bot_id) >= DAILY_LIMIT:
-        print(f"Bot @{bot_username} hit daily limit — skipping follow-ups.")
-        return
+    with _get_bot_dm_lock(bot_id):
+        # Follow-ups share the same daily limit as Step 1
+        if _get_daily_count(reporter, bot_id) >= DAILY_LIMIT:
+            print(f"Bot @{bot_username} hit daily limit — skipping follow-ups.")
+            return
 
+        _run_followup_inner(client, bot_username, bot_id, reporter)
+
+
+def _run_followup_inner(client, bot_username, bot_id, reporter):
     res = reporter.client.table("campaigns") \
         .select("*, message_templates!followup_template_id(*)") \
         .eq("status", "ACTIVE") \
+        .or_(f"account_id.eq.{bot_id},account_id.is.null") \
         .not_.is_("followup_template_id", "null") \
         .execute()
     campaigns = res.data
@@ -222,9 +256,12 @@ def run_followup_step(client, bot_username):
             if _get_hourly_count(reporter, bot_id) >= HOURLY_LIMIT:
                 return
 
+            # Only follow up if THIS bot sent the step-1 message.
+            # Filtering by account_id ensures the same account handles the full conversation.
             log_res = reporter.client.table("outreach_logs") \
                 .select("created_at") \
                 .eq("lead_id", lead["id"]) \
+                .eq("account_id", bot_id) \
                 .eq("sequence_step", 1) \
                 .eq("status", "SUCCESS") \
                 .order("created_at", desc=True) \
@@ -237,6 +274,17 @@ def run_followup_step(client, bot_username):
             if datetime.now(timezone.utc) <= last_sent + timedelta(days=delay_days):
                 continue  # Not enough time has passed
 
+            # Atomic claim: flip SENT → FOLLOWED_UP only if still SENT.
+            # If another bot already claimed or lead replied, data will be empty — skip.
+            claim = reporter.client.table("leads") \
+                .update({"status": "FOLLOWED_UP"}) \
+                .eq("id", lead["id"]) \
+                .eq("status", "SENT") \
+                .execute()
+            if not claim.data:
+                print(f"  ⏭️  @{lead['username']} already claimed for follow-up — skipping.")
+                continue
+
             sleep_time = random.randint(MIN_SLEEP, MAX_SLEEP)
             try:
                 name = lead['full_name'] or lead['username']
@@ -246,14 +294,61 @@ def run_followup_step(client, bot_username):
                 print(f"  → Follow-up to @{lead['username']}...")
                 client.direct_send(msg, [int(lead['pk'])])
 
-                reporter.client.table("leads").update({"status": "FOLLOWED_UP"}).eq("id", lead["id"]).execute()
                 reporter.log_outreach(bot_username, lead["pk"], "SUCCESS", message=msg, sequence_step=2)
                 print(f"  ✓ Follow-up sent. Sleeping {sleep_time//60}m{sleep_time%60}s...")
 
             except Exception as e:
                 print(f"  ✗ Follow-up error with @{lead['username']}: {e}")
+                # Revert — let another bot retry
+                reporter.client.table("leads").update({"status": "SENT"}).eq("id", lead["id"]).execute()
 
             time.sleep(sleep_time)
+
+
+def unfollow_excess(client, username, max_following=150, reporter=None):
+    try:
+        if reporter is None:
+            reporter = BrainReporter()
+        user_id = client.user_id
+        following = client.user_following(user_id, amount=max_following + 50)
+        count = len(following)
+
+        if count <= max_following:
+            return
+
+        # Fetch all lead PKs so we never unfollow someone we're outreaching
+        lead_pks = set()
+        try:
+            if reporter.client:
+                leads_res = reporter.client.table("leads").select("pk").execute()
+                lead_pks = {str(l['pk']) for l in (leads_res.data or [])}
+        except Exception:
+            pass
+
+        # Only unfollow non-leads
+        candidates = [pk for pk in list(following.keys()) if str(pk) not in lead_pks]
+        to_unfollow = count - max_following
+
+        if not candidates:
+            print(f"  @{username}: all following are leads — skipping unfollow.")
+            return
+
+        # Cap at available non-lead candidates
+        to_unfollow = min(to_unfollow, len(candidates))
+        print(f"  @{username} following {count} — unfollowing {to_unfollow} (excluding {len(lead_pks)} leads)...")
+
+        unfollowed = 0
+        for pk in candidates[:to_unfollow]:
+            try:
+                client.user_unfollow(pk)
+                unfollowed += 1
+                time.sleep(random.randint(15, 30))
+            except Exception:
+                continue
+
+        print(f"  Unfollowed {unfollowed} accounts for @{username}")
+    except Exception as e:
+        print(f"  Unfollow check skipped for @{username}: {e}")
 
 
 if __name__ == "__main__":

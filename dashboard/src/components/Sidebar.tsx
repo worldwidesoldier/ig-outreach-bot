@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { LayoutDashboard, Users, Target, Activity, Database, Mail, Inbox, LogOut, Menu, X } from "lucide-react";
+import { LayoutDashboard, Users, Target, Activity, Database, Mail, Inbox, Shield, LogOut, Menu, X } from "lucide-react";
 import { logout } from "@/app/login/actions";
 
 export default function Sidebar() {
@@ -14,7 +14,7 @@ export default function Sidebar() {
     if (pathname === "/login") return null;
 
     const links = [
-        { name: "Home", href: "/", icon: LayoutDashboard },
+        { name: "War Room", href: "/operations", icon: Shield },
         { name: "The Base", href: "/accounts", icon: Database },
         { name: "Leads", href: "/leads", icon: Users },
         { name: "Inbox", href: "/inbox", icon: Inbox },

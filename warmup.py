@@ -21,8 +21,9 @@ from brain_reporter import is_ig_auth_error
 
 WARMUP_SESSIONS_TO_HEALTHY = 21  # 3 runs/day × 7 days = 21 sessions
 
-def run_warmup_protocol(client, day, username, niche_tags=None):
-    reporter = BrainReporter()
+def run_warmup_protocol(client, day, username, niche_tags=None, reporter=None):
+    if reporter is None:
+        reporter = BrainReporter()
     print(f"--- Warmup Session {day}/{WARMUP_SESSIONS_TO_HEALTHY} for @{username} ---")
 
     # Stagger start — never all bots at same time
@@ -114,8 +115,19 @@ def _warmup_light_likes(client, username, reporter):
 
 def _warmup_niche_likes(client, username, reporter, niche_tags=None):
     """Day 5-6: Like posts from niche hashtags. No follows."""
-    tags = niche_tags if niche_tags else ["lifestyle", "miami", "foodie", "nightlife", "marketing"]
-    tag = random.choice(tags)
+    # Large default pool — bots without custom tags pick randomly from this,
+    # so no two bots consistently engage the same hashtags at the same time.
+    DEFAULT_TAG_POOL = [
+        "lifestyle", "miami", "nightlife", "foodie", "travel",
+        "fashion", "fitness", "party", "eventplanning", "music",
+        "artbasel", "wynwood", "brickell", "sobe", "clubbing",
+        "entertainment", "vip", "luxurylifestyle", "weekendvibes", "nightout",
+        "miaminightlife", "southbeach", "miami305", "miamibeach", "downtownmiami",
+    ]
+    # Use custom tags if set, otherwise sample 5 random tags from the pool.
+    # random.sample ensures no repeats and different bots pick different tags.
+    tag_pool = niche_tags if niche_tags else random.sample(DEFAULT_TAG_POOL, k=5)
+    tag = random.choice(tag_pool)
     likes_to_give = random.randint(6, 10)
 
     print(f"  Niche engagement: #{tag}, {likes_to_give} likes...")
@@ -157,12 +169,13 @@ def _warmup_niche_likes(client, username, reporter, niche_tags=None):
 # - Never promotes to HEALTHY directly — goes through full 7-day normal warmup after
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_recovery_warmup(client, session, username, niche_tags=None):
+def run_recovery_warmup(client, session, username, niche_tags=None, reporter=None):
     """
     Gentle recovery protocol for AT_RISK accounts.
     `session` is the warmup_day counter — increments each scheduler run.
     """
-    reporter = BrainReporter()
+    if reporter is None:
+        reporter = BrainReporter()
     print(f"--- Recovery Session {session} for @{username} ---")
 
     # Short stagger — these are sensitive accounts

@@ -288,8 +288,17 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
 
         if (idx + 1) % 10 == 0:
             try:
-                reporter.client.table("scrape_tasks").update({"processed_count": len(all_leads)}).eq("id", task_id).execute()
-                print(f"  Progress: {idx+1}/{len(grid_points)} points | {len(all_leads)} unique users")
+                if task_id:
+                    reporter.client.table("scrape_tasks").update({"processed_count": len(all_leads)}).eq("id", task_id).execute()
+                print(f"  Progress: {idx+1}/{len(grid_points)} points | {len(all_leads)} unique users found")
+                # Checkpoint save every 50 grid points to avoid losing work on long scrapes
+                if (idx + 1) % 50 == 0 and all_leads:
+                    checkpoint_leads = list(all_leads.values())
+                    try:
+                        reporter.client.table("leads").upsert(checkpoint_leads, on_conflict="pk").execute()
+                        print(f"  💾 Mid-scrape checkpoint: {len(checkpoint_leads)} leads persisted")
+                    except Exception as ce:
+                        print(f"  ⚠️ Checkpoint save failed: {ce}")
             except Exception:
                 pass
 
@@ -297,11 +306,20 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
 
     leads_list = list(all_leads.values())
     if leads_list:
-        try:
-            reporter.client.table("leads").upsert(leads_list, on_conflict="pk").execute()
-            print(f"  ✅ {len(leads_list)} leads saved")
-        except Exception as e:
-            print(f"  Error saving leads: {e}")
+        # Save in batches of 100 so partial work is never lost
+        saved = 0
+        batch_size = 100
+        for i in range(0, len(leads_list), batch_size):
+            batch = leads_list[i:i + batch_size]
+            try:
+                reporter.client.table("leads").upsert(batch, on_conflict="pk").execute()
+                saved += len(batch)
+                print(f"  💾 Checkpoint: {saved}/{len(leads_list)} leads saved")
+            except Exception as e:
+                print(f"  ⚠️ Batch save error (leads {i}-{i+batch_size}): {e}")
+        print(f"  ✅ Location scrape complete: {saved} leads saved to Brain")
+    else:
+        print(f"  ⚠️ No leads found for location scrape")
 
     return len(leads_list)
 

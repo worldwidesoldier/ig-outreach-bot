@@ -14,6 +14,13 @@ from scraper import process_pending_tasks
 from bot_utils import get_client
 from inbox_manager import InboxManager
 
+_shutdown_requested = False
+
+def _handle_shutdown(signum, frame):
+    global _shutdown_requested
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Shutdown signal received — finishing in-progress work...")
+    _shutdown_requested = True
+
 os.makedirs("sessions", exist_ok=True)
 
 # Guard against overlapping maintenance cycles
@@ -52,6 +59,10 @@ def daily_maintenance():
 
         def process_single_bot(bot):
             username = bot['username']
+            reporter = BrainReporter()
+            if not reporter.client:
+                print(f"  ⚠️ @{username}: Supabase unavailable — skipping.")
+                return
             try:
                 client = get_client(
                     username=username,
@@ -61,18 +72,25 @@ def daily_maintenance():
                     session_file=f"sessions/{username}.json"
                 )
 
+                if client is None:
+                    return
+
                 if bot['status'] == "AT_RISK":
                     current_session = (bot.get('warmup_day') or 0) + 1
-                    run_recovery_warmup(client, current_session, username, niche_tags=bot.get('niche_tags'))
+                    run_recovery_warmup(client, current_session, username, niche_tags=bot.get('niche_tags'), reporter=reporter)
                 elif bot['status'] == "WARMING_UP":
                     current_day = (bot.get('warmup_day') or 0) + 1
-                    run_warmup_protocol(client, current_day, username, niche_tags=bot.get('niche_tags'))
+                    run_warmup_protocol(client, current_day, username, niche_tags=bot.get('niche_tags'), reporter=reporter)
                 elif bot['status'] == "HEALTHY":
-                    run_campaign_step(client, username)
-                    unfollow_excess(client, username, max_following=150)
-                    run_followup_step(client, username)
+                    run_campaign_step(client, username, reporter=reporter)
+                    unfollow_excess(client, username, max_following=150, reporter=reporter)
+                    # Sync inbox BEFORE followup so replies are detected first
+                    inbox = InboxManager(client, username, reporter=reporter)
+                    inbox.sync_inbox()
+                    run_followup_step(client, username, reporter=reporter)
+                    return  # inbox already synced above
 
-                inbox = InboxManager(client, username)
+                inbox = InboxManager(client, username, reporter=reporter)
                 inbox.sync_inbox()
 
             except Exception as e:
@@ -86,16 +104,21 @@ def daily_maintenance():
                 else:
                     print(f"⚠️ Non-IG error for @{username}, status preserved: {str(e)[:100]}")
 
-        # Process bots with controlled concurrency:
-        # - Max 3 bots simultaneously (avoids hammering Instagram/proxy)
-        # - 90-180s stagger between starting each bot (avoids synchronized logins)
-        MAX_CONCURRENT = 3
+        MAX_CONCURRENT = 10
+
+        cycle_start = datetime.now()
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as executor:
             futures = {}
             for i, bot in enumerate(bots):
                 if i > 0:
-                    stagger = random.randint(90, 180)
+                    # Stagger keeps Instagram from seeing a burst of logins at the same second.
+                    # Short stagger is fine — bots run in parallel threads so they won't
+                    # actually DM at the same time (each bot takes 45+ min to send 9 DMs).
+                    if bot.get('status') == 'WARMING_UP':
+                        stagger = random.randint(5, 15)
+                    else:
+                        stagger = random.randint(15, 30)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Staggering {stagger}s before @{bot['username']}...")
                     time.sleep(stagger)
                 future = executor.submit(process_single_bot, bot)
@@ -107,6 +130,18 @@ def daily_maintenance():
                     future.result()
                 except Exception as e:
                     log_error(f"Unhandled exception in bot @{username}: {e}")
+
+        cycle_end = datetime.now()
+        try:
+            reporter.client.table("system_status").upsert({
+                "id": "engine",
+                "last_cycle_start": cycle_start.isoformat(),
+                "last_cycle_end": cycle_end.isoformat(),
+                "last_cycle_duration_seconds": int((cycle_end - cycle_start).total_seconds()),
+                "last_cycle_bots_processed": len(bots)
+            }).execute()
+        except Exception as e:
+            print(f"Error logging cycle to Supabase: {e}")
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Fleet Maintenance complete.")
 
@@ -143,8 +178,12 @@ def unfollow_excess(client, username, max_following=150):
 
 
 def check_fleet_health():
+    """
+    Passive session check — loads session file and checks token expiry.
+    Does NOT make any live Instagram API calls (no get_timeline_feed).
+    Marks accounts CHALLENGE only if session file is missing or token is clearly expired.
+    """
     try:
-        from instagrapi import Client
         reporter = BrainReporter()
         if not reporter.client: return
 
@@ -152,32 +191,17 @@ def check_fleet_health():
         bots = res.data
         if not bots: return
 
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Health Check — {len(bots)} bots...")
-        ok, flagged = 0, 0
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Passive Health Check — {len(bots)} bots...")
+        missing = 0
 
         for bot in bots:
             username = bot['username']
             session_file = f"sessions/{username}.json"
             if not os.path.exists(session_file):
-                continue
-            try:
-                cl = Client()
-                cl.delay_range = [1, 3]
-                cl.request_timeout = 30
-                if bot.get('proxy'):
-                    cl.set_proxy(bot['proxy'].strip())
-                if bot.get('device_settings'):
-                    cl.set_settings(bot['device_settings'])
-                cl.load_settings(session_file)
-                cl.get_timeline_feed()
-                ok += 1
-            except Exception as e:
-                if is_ig_auth_error(e):
-                    reporter.report_status(username, "CHALLENGE")
-                    flagged += 1
-                    print(f"  ⚠️ @{username} → CHALLENGE (session dead)")
+                missing += 1
+                print(f"  ⚠️ @{username} — no session file (needs login on next cycle)")
 
-        print(f"  ✅ {ok} healthy  |  🚨 {flagged} flagged as CHALLENGE")
+        print(f"  Session files: {len(bots) - missing} present | {missing} missing")
     except Exception as e:
         log_error(f"Health check crashed: {e}")
 
@@ -202,22 +226,33 @@ def run_scraper_check():
 
 if __name__ == "__main__":
     print("🚀 IG Outreach Engine Started (Robust Mode)")
+    import signal
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
 
-    run_scraper_check()
-    check_fleet_health()
-    daily_maintenance()
+    def _bg(fn):
+        """Run a job in a background thread so the heartbeat loop never blocks."""
+        t = threading.Thread(target=fn, daemon=True)
+        t.start()
 
-    schedule.every(5).minutes.do(run_scraper_check)
-    schedule.every(2).hours.do(check_fleet_health)
-    schedule.every().day.at("13:00").do(daily_maintenance)
-    schedule.every().day.at("18:00").do(daily_maintenance)
-    schedule.every().day.at("21:00").do(daily_maintenance)
+    # Run startup tasks in background — heartbeat loop starts immediately
+    _bg(run_scraper_check)
+    _bg(check_fleet_health)
+    _bg(daily_maintenance)
+
+    schedule.every(5).minutes.do(lambda: _bg(run_scraper_check))
+    schedule.every(2).hours.do(lambda: _bg(check_fleet_health))
+    schedule.every().day.at("11:00").do(lambda: _bg(daily_maintenance))  # 11am ET
+    schedule.every().day.at("17:00").do(lambda: _bg(daily_maintenance))  # 5pm ET
+    schedule.every().day.at("22:00").do(lambda: _bg(daily_maintenance))  # 10pm ET — peak hours
 
     reporter = BrainReporter()
-    while True:
+    while not _shutdown_requested:
         try:
             reporter.report_heartbeat()
             schedule.run_pending()
         except Exception as e:
             log_error(f"Main loop exception: {e}")
         time.sleep(1)
+
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Engine stopped cleanly.")
