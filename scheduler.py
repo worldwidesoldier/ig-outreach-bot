@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import random
 import threading
@@ -15,11 +16,11 @@ from inbox_manager import InboxManager
 os.makedirs("sessions", exist_ok=True)
 
 def log_error(error_msg):
-    with open("engine_error.log", "a") as f:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        f.write(f"[{timestamp}] {error_msg}\n")
-        f.write(traceback.format_exc())
-        f.write("-" * 30 + "\n")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sys.stderr.write(f"[{timestamp}] {error_msg}\n")
+    sys.stderr.write(traceback.format_exc())
+    sys.stderr.write("-" * 30 + "\n")
+    sys.stderr.flush()
 
 def daily_maintenance():
     try:

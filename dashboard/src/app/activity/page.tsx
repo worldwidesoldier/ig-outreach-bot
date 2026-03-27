@@ -69,7 +69,7 @@ export default function ActivityPage() {
                                     <span className="text-sm font-bold text-indigo-400">@{log.accounts?.username || "bot"}</span>
                                     <span className="text-[10px] text-slate-500 flex items-center gap-1 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
                                         <Clock className="w-3 h-3" />
-                                        {new Date(log.created_at).toLocaleTimeString()}
+                                        {new Date(log.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} {new Date(log.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                     </span>
                                 </div>
                                 <p className="text-slate-300 text-sm leading-relaxed">{log.description}</p>
