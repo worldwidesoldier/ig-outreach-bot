@@ -82,8 +82,11 @@ def daily_maintenance():
                     current_day = (bot.get('warmup_day') or 0) + 1
                     run_warmup_protocol(client, current_day, username, niche_tags=bot.get('niche_tags'), reporter=reporter)
                 elif bot['status'] == "HEALTHY":
+                    if bot.get('account_type') == 'SCRAPER':
+                        return # Scrapers don't do DM campaigns, unfollows, or inbox syncs
+
                     run_campaign_step(client, username, reporter=reporter)
-                    unfollow_excess(client, username, max_following=150, reporter=reporter)
+                    unfollow_excess(client, username, max_following=150)
                     # Sync inbox BEFORE followup so replies are detected first
                     inbox = InboxManager(client, username, reporter=reporter)
                     inbox.sync_inbox()
