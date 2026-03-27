@@ -45,6 +45,7 @@ export default function AccountTable({ accounts, selectedIds, onSelectChange, on
                         </th>
                         <th className="px-6 py-4">Account</th>
                         <th className="px-6 py-4">Status</th>
+                        <th className="px-6 py-4">Type</th>
                         <th className="px-6 py-4">Proxy</th>
                         <th className="px-6 py-4 text-right">Actions</th>
                     </tr>
@@ -79,6 +80,22 @@ export default function AccountTable({ accounts, selectedIds, onSelectChange, on
                             </td>
                             <td className="px-6 py-4">
                                 <StatusCell acc={acc} onRefresh={onRefresh} />
+                            </td>
+                            <td className="px-6 py-4">
+                                <button
+                                    onClick={async () => {
+                                        const newType = acc.account_type === 'SCRAPER' ? 'DM' : 'SCRAPER';
+                                        await supabase.from("accounts").update({ account_type: newType }).eq("id", acc.id);
+                                        onRefresh?.();
+                                    }}
+                                    className={`px-2 py-1 rounded text-[10px] uppercase font-bold transition-all ${
+                                        acc.account_type === 'SCRAPER' 
+                                        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20' 
+                                        : 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20'
+                                    }`}
+                                >
+                                    {acc.account_type || 'DM'}
+                                </button>
                             </td>
                             <td className="px-6 py-4">
                                 <div className="text-xs text-slate-400 font-mono truncate max-w-[200px]">

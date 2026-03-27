@@ -88,21 +88,32 @@ def _process_bot_tasks(bot, tasks, reporter):
             break
 
         # Cap amount so we don't exceed daily limit
-        amount = min(task['amount'], DAILY_SCRAPE_LIMIT - daily_count)
+        # Get processed_count so we know where we are in a massive scrape
+        processed_so_far = task.get('processed_count') or 0
+        remaining_to_scrape = task['amount'] - processed_so_far
+
+        if remaining_to_scrape <= 0:
+            reporter.client.table("scrape_tasks").update({"status": "COMPLETED"}).eq("id", task_id).execute()
+            continue
+
+        amount = min(remaining_to_scrape, DAILY_SCRAPE_LIMIT - daily_count)
 
         try:
             reporter.client.table("scrape_tasks").update({"status": "RUNNING"}).eq("id", task_id).execute()
 
             target = task['target_username']
-            print(f"🚀 @{username} → @{target} ({amount} followers) | daily: {daily_count}/{DAILY_SCRAPE_LIMIT}")
+            print(f"🚀 @{username} → @{target} ({amount} followers) | daily: {daily_count}/{DAILY_SCRAPE_LIMIT} | progress: {processed_so_far}/{task['amount']}")
 
             scrape_to_brain(client, target, list_id=list_id, amount=amount, task_id=task_id)
 
             _increment_daily_count(reporter, bot['id'], amount)
 
+            new_processed_count = processed_so_far + amount
+            new_status = "COMPLETED" if new_processed_count >= task['amount'] else "PENDING"
+
             reporter.client.table("scrape_tasks").update({
-                "status": "COMPLETED",
-                "processed_count": amount
+                "status": new_status,
+                "processed_count": new_processed_count
             }).eq("id", task_id).execute()
 
             print(f"✅ @{username} done: @{target}")
@@ -134,7 +145,7 @@ def process_pending_tasks():
         print("No pending scrape tasks found.")
         return
 
-    bot_res = reporter.client.table("accounts").select("*").eq("status", "HEALTHY").execute()
+    bot_res = reporter.client.table("accounts").select("*").eq("status", "HEALTHY").eq("account_type", "SCRAPER").execute()
     bots = bot_res.data
 
     if not bots:
