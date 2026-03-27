@@ -4,3 +4,4 @@ pyotp
 supabase
 schedule
 requests
+geopy

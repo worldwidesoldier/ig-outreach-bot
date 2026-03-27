@@ -4,10 +4,14 @@ from brain_reporter import BrainReporter
 from brain_reporter import is_ig_auth_error
 
 # ─── WARMUP PROTOCOL (based on BlackHatWorld research) ────────────────────────
-# Day 1-2:  Passive only — scroll feed, view stories. No likes.
-# Day 3-4:  Light likes — 5-8 posts, 45-90s between each.
-# Day 5-6:  Niche engagement — hashtag likes, 60-120s between each.
-# Day 7+:   Promote to HEALTHY.
+# The scheduler runs maintenance 3x per day (13h, 18h, 21h).
+# warmup_day increments by 1 each run, so 3 increments = 1 real day.
+# Thresholds are set in scheduler runs (not calendar days):
+#
+# Sessions  1-6  (real days 1-2):  Passive only — scroll, stories. No likes.
+# Sessions  7-12 (real days 3-4):  Light likes — 5-8 posts, 45-90s between.
+# Sessions 13-18 (real days 5-6):  Niche engagement — hashtag likes.
+# Session  21+   (real day 7):     Promote to HEALTHY.
 #
 # Rules:
 # - Never mark CHALLENGE for non-IG errors (DB errors, code bugs)
@@ -15,9 +19,11 @@ from brain_reporter import is_ig_auth_error
 # - Never follow during warmup (creates unfollow debt)
 # ──────────────────────────────────────────────────────────────────────────────
 
+WARMUP_SESSIONS_TO_HEALTHY = 21  # 3 runs/day × 7 days = 21 sessions
+
 def run_warmup_protocol(client, day, username, niche_tags=None):
     reporter = BrainReporter()
-    print(f"--- Warmup Day {day} for @{username} ---")
+    print(f"--- Warmup Session {day}/{WARMUP_SESSIONS_TO_HEALTHY} for @{username} ---")
 
     # Stagger start — never all bots at same time
     stagger_delay = random.randint(60, 180)
@@ -25,24 +31,24 @@ def run_warmup_protocol(client, day, username, niche_tags=None):
     time.sleep(stagger_delay)
 
     try:
-        if day <= 2:
+        if day <= 6:
             _warmup_passive(client, username, reporter)
 
-        elif day <= 4:
+        elif day <= 12:
             _warmup_light_likes(client, username, reporter)
 
-        elif day <= 6:
+        elif day <= 18:
             _warmup_niche_likes(client, username, reporter, niche_tags)
 
         else:
-            # Day 7+: final check then promote
-            print(f"  Day {day}: Running final feed check before promotion...")
-            reporter.log_activity(username, "WARMUP_FINAL", f"Day {day}: Pre-promotion check")
+            # Session 19-21: final check then promote
+            print(f"  Session {day}: Running final feed check before promotion...")
+            reporter.log_activity(username, "WARMUP_FINAL", f"Session {day}: Pre-promotion check")
             client.get_timeline_feed()
             time.sleep(random.randint(30, 60))
 
-        # Promote if completed 7 days
-        status = "HEALTHY" if day >= 7 else "WARMING_UP"
+        # Promote to HEALTHY after 21 sessions (~7 real days)
+        status = "HEALTHY" if day >= WARMUP_SESSIONS_TO_HEALTHY else "WARMING_UP"
         reporter.report_status(username, status, warmup_day=day)
 
         if status == "HEALTHY":

@@ -138,10 +138,14 @@ def get_client(username, password, proxy=None, two_factor_seed=None, session_fil
             print(f"⚠️ Bot @{username} session expired, doing fresh login...")
             cl = Client()  # Fresh client to avoid stale state
             cl.delay_range = [2, 7]
+            cl.request_timeout = 60
             if proxy:
                 cl.set_proxy(proxy.strip())
             if device_settings:
                 cl.set_settings(device_settings)
+            # Re-apply challenge handler on the new client
+            if two_factor_seed:
+                cl.challenge_code_handler = _auto_challenge_handler
 
     # 5. Login Flow — only if session was not reused
     if not session_valid:
