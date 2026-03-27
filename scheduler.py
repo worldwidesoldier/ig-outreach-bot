@@ -7,7 +7,7 @@ import schedule
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from brain_reporter import BrainReporter, is_ig_auth_error
+from brain_reporter import BrainReporter, is_ig_auth_error, is_ig_action_block
 from warmup import run_warmup_protocol, run_recovery_warmup
 from sender import run_campaign_step, run_followup_step, recover_stuck_leads
 from scraper import process_pending_tasks
@@ -79,6 +79,10 @@ def daily_maintenance():
                 log_error(f"Error processing bot @{username}: {e}")
                 if is_ig_auth_error(e):
                     reporter.report_status(username, "CHALLENGE")
+                elif is_ig_action_block(e):
+                    # Temporary action block — mark AT_RISK, do not destroy the account
+                    reporter.report_status(username, "AT_RISK")
+                    print(f"⏸️ @{username} hit action block — marked AT_RISK (will recover automatically)")
                 else:
                     print(f"⚠️ Non-IG error for @{username}, status preserved: {str(e)[:100]}")
 
