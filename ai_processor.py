@@ -9,28 +9,45 @@ class AILeadProcessor:
     def __init__(self):
         self.reporter = BrainReporter()
         
-    def score_lead(self, bio, full_name, follower_count):
+    def score_lead(self, bio, full_name, follower_count, username=""):
         """
         Scoring Logic — tolerant of missing data (UserShort objects from scraper
         don't carry bio/follower_count, so we treat absence as neutral, not rejection).
+
+        Base: 50
+        Bonuses:
+          +10  has any bio (real person filled it out)
+          +5   has a full_name
+          +15  follower_count 100–5,000 (outreach sweet spot)
+        Penalties:
+          -30  follower_count 1–9 (bot / dead account — 0 is treated as missing data)
+          -10  follower_count > 50,000 (influencer, won't engage)
+          -15  no full_name AND no bio (zero identity signals)
+          -10  username contains 5+ consecutive digits (auto-generated pattern)
         """
+        import re
         score = 50  # Base score — neutral
 
+        # ── Identity signals ──────────────────────────────────────────────────
         if bio:
-            high_value_keywords = ["founder", "ceo", "owner", "empresa", "negócio", "invest", "marketing", "vendas", "events", "promoter", "nightlife", "venue", "bar", "club"]
-            low_value_keywords = ["student", "estudante", "pessoal", "privado", "spam", "bot"]
-            bio_lower = bio.lower()
-            for kw in high_value_keywords:
-                if kw in bio_lower: score += 10
-            for kw in low_value_keywords:
-                if kw in bio_lower: score -= 15
+            score += 10
+        if full_name:
+            score += 5
+        if not bio and not full_name:
+            score -= 15  # No identity at all — likely bot or abandoned account
 
-        # Only apply follower filter if data is available
+        # ── Follower count ────────────────────────────────────────────────────
         if follower_count and follower_count > 0:
-            if 100 <= follower_count <= 5000:
-                score += 15
+            if 1 <= follower_count <= 9:
+                score -= 30  # Almost certainly a bot or dead account
+            elif 100 <= follower_count <= 5000:
+                score += 15  # Sweet spot for outreach
             elif follower_count > 50000:
-                score -= 10
+                score -= 10  # Influencer — unlikely to engage
+
+        # ── Username pattern ──────────────────────────────────────────────────
+        if username and re.search(r'\d{5,}', username):
+            score -= 10  # Auto-generated username pattern
 
         return min(max(score, 0), 100)
 
@@ -49,7 +66,8 @@ class AILeadProcessor:
             score = self.score_lead(
                 bio=lead.get("bio") or "",
                 full_name=lead.get("full_name") or "",
-                follower_count=lead.get("follower_count") or 0
+                follower_count=lead.get("follower_count") or 0,
+                username=lead.get("username") or ""
             )
             
             status = "QUALIFIED" if score >= 40 else "REJECTED"

@@ -4,7 +4,8 @@ import { useState } from "react";
 import { Shield, ShieldAlert, ShieldCheck, Trash2, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
-const WARMUP_DAYS = 7;
+const WARMUP_SESSIONS = 21; // backend increments per scheduler run (3x/day × 7 days)
+const WARMUP_DAYS = 7;     // display to user in real calendar days
 
 export default function AccountTable({ accounts, selectedIds, onSelectChange, onDelete, onRefresh }: {
     accounts: any[],
@@ -135,8 +136,9 @@ export default function AccountTable({ accounts, selectedIds, onSelectChange, on
 }
 
 function StatusCell({ acc, onRefresh }: { acc: any; onRefresh?: () => void }) {
-    const day = acc.warmup_day || 0;
-    const progress = Math.min((day / WARMUP_DAYS) * 100, 100);
+    const session = acc.warmup_day || 0;
+    const day = Math.ceil(session / 3) || 0;           // convert sessions → real calendar days
+    const progress = Math.min((session / WARMUP_SESSIONS) * 100, 100);
 
     if (acc.status === "HEALTHY") {
         return (

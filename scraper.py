@@ -350,7 +350,7 @@ def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=N
     user_id = client.user_id_from_username(target_username)
     
     # We use v1_chunk to support pagination
-    users, new_cursor = client.user_followers_v1_chunk(user_id, max_amount=amount, end_cursor=start_cursor)
+    users, new_cursor = client.user_followers_v1_chunk(user_id, max_amount=amount, max_id=start_cursor or "")
 
     new_leads = []
     processed = 0
