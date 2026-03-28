@@ -102,9 +102,11 @@ def _process_bot_tasks(bot, tasks, reporter):
             reporter.client.table("scrape_tasks").update({"status": "RUNNING"}).eq("id", task_id).execute()
 
             target = task['target_username']
+            current_cursor = task.get('next_cursor')
+
             print(f"🚀 @{username} → @{target} ({amount} followers) | daily: {daily_count}/{DAILY_SCRAPE_LIMIT} | progress: {processed_so_far}/{task['amount']}")
 
-            scrape_to_brain(client, target, list_id=list_id, amount=amount, task_id=task_id)
+            new_cursor = scrape_to_brain(client, target, list_id=list_id, amount=amount, task_id=task_id, start_cursor=current_cursor)
 
             _increment_daily_count(reporter, bot['id'], amount)
 
@@ -113,7 +115,8 @@ def _process_bot_tasks(bot, tasks, reporter):
 
             reporter.client.table("scrape_tasks").update({
                 "status": new_status,
-                "processed_count": new_processed_count
+                "processed_count": new_processed_count,
+                "next_cursor": new_cursor
             }).eq("id", task_id).execute()
 
             print(f"✅ @{username} done: @{target}")
@@ -337,20 +340,22 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
 
 # ─── USERNAME SCRAPING ────────────────────────────────────────────────────────
 
-def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=None):
+def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=None, start_cursor=None):
     reporter = BrainReporter()
     if not reporter.client:
         print("Error: Supabase client not initialized.")
-        return
+        return None
 
     print(f"--- Scraping {amount} followers from @{target_username} ---")
     user_id = client.user_id_from_username(target_username)
-    followers = client.user_followers(user_id, amount=amount)
+    
+    # We use v1_chunk to support pagination
+    users, new_cursor = client.user_followers_v1_chunk(user_id, max_amount=amount, end_cursor=start_cursor)
 
     new_leads = []
     processed = 0
 
-    for f_user_id, user_info in followers.items():
+    for user_info in users:
         lead_data = {
             "pk": str(user_info.pk),
             "username": user_info.username,
@@ -364,20 +369,23 @@ def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=N
         new_leads.append(lead_data)
         processed += 1
 
-        if task_id and (processed % 50 == 0 or processed == len(followers)):
+        if task_id and (processed % 50 == 0 or processed == len(users)):
             try:
-                reporter.client.table("scrape_tasks").update({"processed_count": processed}).eq("id", task_id).execute()
+                base_count = reporter.client.table("scrape_tasks").select("processed_count").eq("id", task_id).single().execute().data.get('processed_count', 0)
+                reporter.client.table("scrape_tasks").update({"processed_count": base_count + processed}).eq("id", task_id).execute()
             except Exception:
                 pass
 
     try:
         if new_leads:
             reporter.client.table("leads").upsert(new_leads, on_conflict="pk").execute()
-            print(f"Successfully synced {len(new_leads)} leads.")
+            print(f"Successfully synced {len(new_leads)} unique leads to DB.")
         else:
             print("No leads found.")
     except Exception as e:
         print(f"Error syncing to Supabase: {e}")
+        
+    return new_cursor
 
 
 if __name__ == "__main__":
