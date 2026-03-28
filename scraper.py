@@ -13,7 +13,8 @@ load_dotenv()
 
 from bot_utils import get_client
 
-DAILY_SCRAPE_LIMIT = 5000
+DAILY_SCRAPE_LIMIT = 500   # Safe daily ceiling — industry research shows 500 combined actions/day max
+PER_SESSION_LIMIT = 200   # One page per run, one API call per run — no bursts
 
 
 # ─── DAILY LIMIT HELPERS ──────────────────────────────────────────────────────
@@ -69,6 +70,8 @@ def _process_bot_tasks(bot, tasks, reporter):
         print(f"❌ @{username} failed to initialize: {e}")
         return
 
+    user_id_cache = {}  # target_username -> Instagram user_id (resolved once, reused across tasks)
+
     for i, task in enumerate(tasks):
         task_id = task['id']
         list_id = task['list_id']
@@ -96,22 +99,34 @@ def _process_bot_tasks(bot, tasks, reporter):
             reporter.client.table("scrape_tasks").update({"status": "COMPLETED"}).eq("id", task_id).execute()
             continue
 
-        amount = min(remaining_to_scrape, DAILY_SCRAPE_LIMIT - daily_count)
+        target = task['target_username']
+
+        # Resolve user_id once per target — avoids one extra API call per scheduler run
+        if target not in user_id_cache:
+            try:
+                user_id_cache[target] = client.user_id_from_username(target)
+            except Exception as e:
+                print(f"  ❌ Could not resolve @{target}: {e}")
+                reporter.client.table("scrape_tasks").update({"status": "PENDING"}).eq("id", task_id).execute()
+                continue
+        target_user_id = user_id_cache[target]
 
         try:
             reporter.client.table("scrape_tasks").update({"status": "RUNNING"}).eq("id", task_id).execute()
 
-            target = task['target_username']
             current_cursor = task.get('next_cursor')
 
-            print(f"🚀 @{username} → @{target} ({amount} followers) | daily: {daily_count}/{DAILY_SCRAPE_LIMIT} | progress: {processed_so_far}/{task['amount']}")
+            print(f"🚀 @{username} → @{target} | daily: {daily_count}/{DAILY_SCRAPE_LIMIT} | progress: {processed_so_far}/{task['amount']}")
 
-            new_cursor = scrape_to_brain(client, target, list_id=list_id, amount=amount, task_id=task_id, start_cursor=current_cursor)
+            # Returns (cursor, actual_new_count) — only counts truly new leads inserted
+            new_cursor, actual_count = scrape_to_brain(client, target, list_id=list_id, task_id=task_id, start_cursor=current_cursor, user_id=target_user_id)
 
-            _increment_daily_count(reporter, bot['id'], amount)
+            # Increment by real inserts, not an estimate — keeps processed_count accurate
+            _increment_daily_count(reporter, bot['id'], actual_count)
 
-            new_processed_count = processed_so_far + amount
-            new_status = "COMPLETED" if new_processed_count >= task['amount'] else "PENDING"
+            new_processed_count = processed_so_far + actual_count
+            # Task is complete when cursor is exhausted OR we've hit the requested amount
+            new_status = "COMPLETED" if (not new_cursor or new_processed_count >= task['amount']) else "PENDING"
 
             reporter.client.table("scrape_tasks").update({
                 "status": new_status,
@@ -119,14 +134,28 @@ def _process_bot_tasks(bot, tasks, reporter):
                 "next_cursor": new_cursor
             }).eq("id", task_id).execute()
 
-            print(f"✅ @{username} done: @{target}")
+            print(f"✅ @{username} page done: @{target} ({new_processed_count}/{task['amount']})")
 
         except Exception as e:
             print(f"❌ @{username} task failed ({task['target_username']}): {e}")
+            # Fetch current processed_count from DB — checkpoints inside scrape_to_brain
+            # may have already saved partial progress, so preserve it.
+            try:
+                saved = reporter.client.table("scrape_tasks").select("processed_count, next_cursor").eq("id", task_id).single().execute().data
+                saved_count = saved.get("processed_count") or processed_so_far
+                saved_cursor = saved.get("next_cursor")
+            except Exception:
+                saved_count = processed_so_far
+                saved_cursor = current_cursor
+            # Mark PENDING (not FAILED) so the engine auto-retries next cycle
+            # with a potentially different bot. Log the error for visibility.
             reporter.client.table("scrape_tasks").update({
-                "status": "FAILED",
+                "status": "PENDING",
+                "processed_count": saved_count,
+                "next_cursor": saved_cursor,
                 "error_log": str(e)
             }).eq("id", task_id).execute()
+            print(f"  ↩️  Task reset to PENDING (progress: {saved_count}/{task['amount']}) — will retry next cycle.")
 
         # Delay between tasks — never rush consecutive scrapes
         if i < len(tasks) - 1:
@@ -162,9 +191,12 @@ def process_pending_tasks():
     print(f"📋 {len(tasks)} tasks | {len(bots)} HEALTHY bots | {len(username_tasks)} USERNAME + {len(location_tasks)} LOCATION")
 
     # ── Round-robin assignment of USERNAME tasks across bots ──────────────────
-    bot_task_map = {bot['id']: [] for bot in bots}
+    # Shuffle bots so repeated failures don't always land on the same bot.
+    bots_shuffled = bots[:]
+    random.shuffle(bots_shuffled)
+    bot_task_map = {bot['id']: [] for bot in bots_shuffled}
     for i, task in enumerate(username_tasks):
-        assigned = bots[i % len(bots)]
+        assigned = bots_shuffled[i % len(bots_shuffled)]
         bot_task_map[assigned['id']].append(task)
 
     # ── Launch one thread per bot ─────────────────────────────────────────────
@@ -294,11 +326,11 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
 
                     time.sleep(random.uniform(1, 3))
 
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  ⚠️ Location {loc.pk} error: {str(e)[:80]}")
 
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠️ Grid point ({point_lat:.4f}, {point_lng:.4f}) error: {str(e)[:80]}")
 
         if (idx + 1) % 10 == 0:
             try:
@@ -339,53 +371,111 @@ def scrape_by_location(client, city_name, radius_km, recency_days, list_id, task
 
 
 # ─── USERNAME SCRAPING ────────────────────────────────────────────────────────
+#
+# ROOT CAUSE OF RATE LIMITS:
+# user_followers_v1_chunk() has an internal while loop — asking for 1000 users
+# causes it to fire 5 consecutive API calls (Instagram returns ~200/page) with
+# only 2-7s delays. Instagram sees a burst on the followers endpoint → 400.
+#
+# FIX: _scrape_one_page() makes exactly ONE raw API call per scheduler run.
+# ~200 users/run × every 5 min = 10k followers in ~4 hours. Safe and natural.
+# ─────────────────────────────────────────────────────────────────────────────
 
-def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=None, start_cursor=None):
+def _scrape_one_page(client, user_id, cursor=""):
+    """
+    Make exactly ONE API request to Instagram's followers endpoint.
+    Returns (list_of_UserShort, next_cursor_string).
+    next_cursor is "" when there are no more pages.
+    """
+    from instagrapi.extractors import extract_user_short
+    result = client.private_request(
+        f"friendships/{user_id}/followers/",
+        params={
+            "max_id": cursor or "",
+            "count": 200,
+            "rank_token": client.rank_token,
+            "search_surface": "follow_list_page",
+            "query": "",
+            "enable_groups": "true",
+        },
+    )
+    users = [extract_user_short(u) for u in result.get("users", [])]
+    next_cursor = result.get("next_max_id") or ""
+    return users, next_cursor
+
+
+def scrape_to_brain(client, target_username, list_id=None, amount=100, task_id=None, start_cursor=None, user_id=None):
+    """
+    Scrapes exactly ONE page of followers (~200 users) and inserts only NEW leads.
+    Returns (next_cursor, actual_new_count).
+    - user_id: pass the pre-resolved Instagram user ID to skip an extra API call.
+    - Deduplicates against existing leads in the same list before inserting.
+    """
     reporter = BrainReporter()
     if not reporter.client:
         print("Error: Supabase client not initialized.")
-        return None
+        return None, 0
 
-    print(f"--- Scraping {amount} followers from @{target_username} ---")
-    user_id = client.user_id_from_username(target_username)
-    
-    # We use v1_chunk to support pagination
-    users, new_cursor = client.user_followers_v1_chunk(user_id, max_amount=amount, max_id=start_cursor or "")
+    print(f"--- Scraping one page of followers from @{target_username} (cursor: {start_cursor or 'start'}) ---")
 
-    new_leads = []
-    processed = 0
+    if user_id is None:
+        user_id = client.user_id_from_username(target_username)
 
-    for user_info in users:
-        lead_data = {
-            "pk": str(user_info.pk),
-            "username": user_info.username,
-            "full_name": user_info.full_name,
+    # One page = one API call = no burst, no rate limit
+    users, new_cursor = _scrape_one_page(client, user_id, cursor=start_cursor or "")
+
+    print(f"  Page returned {len(users)} users. Next cursor: {'yes' if new_cursor else 'END'}")
+
+    if not users:
+        print("  No users returned from this page.")
+        return new_cursor or None, 0
+
+    # Dedup: check which PKs on this page already exist in this list
+    existing_pks: set = set()
+    try:
+        if list_id:
+            page_pks = [str(u.pk) for u in users]
+            existing_res = reporter.client.table("leads") \
+                .select("pk") \
+                .eq("list_id", list_id) \
+                .in_("pk", page_pks) \
+                .execute()
+            existing_pks = {row['pk'] for row in (existing_res.data or [])}
+    except Exception as e:
+        print(f"  ⚠️ Dedup check failed (inserting all): {e}")
+
+    new_leads = [
+        {
+            "pk": str(u.pk),
+            "username": u.username,
+            "full_name": u.full_name,
             "source_username": target_username,
             "list_id": list_id,
             "status": "PENDING",
-            "bio": getattr(user_info, 'biography', ""),
-            "follower_count": getattr(user_info, 'follower_count', 0)
+            "bio": getattr(u, 'biography', ""),
+            "follower_count": getattr(u, 'follower_count', 0)
         }
-        new_leads.append(lead_data)
-        processed += 1
+        for u in users
+        if str(u.pk) not in existing_pks
+    ]
 
-        if task_id and (processed % 50 == 0 or processed == len(users)):
-            try:
-                base_count = reporter.client.table("scrape_tasks").select("processed_count").eq("id", task_id).single().execute().data.get('processed_count', 0)
-                reporter.client.table("scrape_tasks").update({"processed_count": base_count + processed}).eq("id", task_id).execute()
-            except Exception:
-                pass
+    actual_new = len(new_leads)
+    skipped = len(users) - actual_new
+    if skipped:
+        print(f"  Deduped: {skipped} already in list — {actual_new} genuinely new leads.")
 
     try:
         if new_leads:
             reporter.client.table("leads").upsert(new_leads, on_conflict="pk").execute()
-            print(f"Successfully synced {len(new_leads)} unique leads to DB.")
+            print(f"  Synced {actual_new} new leads to DB.")
         else:
-            print("No leads found.")
+            print(f"  All {len(users)} followers on this page already in list — skipping insert.")
+            actual_new = 0
     except Exception as e:
-        print(f"Error syncing to Supabase: {e}")
-        
-    return new_cursor
+        print(f"  Error syncing to Supabase: {e}")
+        actual_new = 0
+
+    return new_cursor or None, actual_new
 
 
 if __name__ == "__main__":

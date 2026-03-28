@@ -13,6 +13,7 @@ from sender import run_campaign_step, run_followup_step, recover_stuck_leads
 from scraper import process_pending_tasks
 from bot_utils import get_client
 from inbox_manager import InboxManager
+from ai_processor import AILeadProcessor
 
 _shutdown_requested = False
 
@@ -115,11 +116,11 @@ def daily_maintenance():
             futures = {}
             for i, bot in enumerate(bots):
                 if i > 0:
-                    # Stagger keeps Instagram from seeing a burst of logins at the same second.
-                    # Short stagger is fine — bots run in parallel threads so they won't
-                    # actually DM at the same time (each bot takes 45+ min to send 9 DMs).
+                    # Stagger keeps Instagram from seeing coordinated activity.
+                    # Warming accounts get a long stagger so multiple bots don't
+                    # all like posts within the same minute — looks coordinated.
                     if bot.get('status') == 'WARMING_UP':
-                        stagger = random.randint(5, 15)
+                        stagger = random.randint(120, 300)  # 2-5 min between warming bots
                     else:
                         stagger = random.randint(15, 30)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] Staggering {stagger}s before @{bot['username']}...")
@@ -135,16 +136,8 @@ def daily_maintenance():
                     log_error(f"Unhandled exception in bot @{username}: {e}")
 
         cycle_end = datetime.now()
-        try:
-            reporter.client.table("system_status").upsert({
-                "id": "engine",
-                "last_cycle_start": cycle_start.isoformat(),
-                "last_cycle_end": cycle_end.isoformat(),
-                "last_cycle_duration_seconds": int((cycle_end - cycle_start).total_seconds()),
-                "last_cycle_bots_processed": len(bots)
-            }).execute()
-        except Exception as e:
-            print(f"Error logging cycle to Supabase: {e}")
+        cycle_duration = int((cycle_end - cycle_start).total_seconds())
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Cycle complete — {len(bots)} bots in {cycle_duration}s.")
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Fleet Maintenance complete.")
 
@@ -209,8 +202,6 @@ def check_fleet_health():
         log_error(f"Health check crashed: {e}")
 
 
-from ai_processor import AILeadProcessor
-
 def run_ai_qualification():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Running AI Lead Qualification...")
@@ -243,7 +234,7 @@ if __name__ == "__main__":
     _bg(check_fleet_health)
     _bg(daily_maintenance)
 
-    schedule.every(5).minutes.do(lambda: _bg(run_scraper_check))
+    schedule.every(30).minutes.do(lambda: _bg(run_scraper_check))
     schedule.every(2).hours.do(lambda: _bg(check_fleet_health))
     schedule.every().day.at("11:00").do(lambda: _bg(daily_maintenance))  # 11am ET
     schedule.every().day.at("17:00").do(lambda: _bg(daily_maintenance))  # 5pm ET
@@ -252,6 +243,9 @@ if __name__ == "__main__":
     reporter = BrainReporter()
     while not _shutdown_requested:
         try:
+            # Reconnect if Supabase was down at startup or connection was lost
+            if not reporter.client:
+                reporter = BrainReporter()
             reporter.report_heartbeat()
             schedule.run_pending()
         except Exception as e:
