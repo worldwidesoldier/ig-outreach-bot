@@ -13,7 +13,7 @@ load_dotenv()
 
 from bot_utils import get_client
 
-DAILY_SCRAPE_LIMIT = 1000
+DAILY_SCRAPE_LIMIT = 5000
 
 
 # ─── DAILY LIMIT HELPERS ──────────────────────────────────────────────────────
