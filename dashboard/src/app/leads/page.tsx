@@ -159,7 +159,6 @@ export default function LeadsPage() {
     const tabs: { id: Tab; label: string; icon: typeof Search }[] = [
         { id: "scraper", label: "Scraper", icon: Search },
         { id: "lists", label: "Lists", icon: List },
-        { id: "database", label: "Database", icon: Users },
     ];
 
     const pipelineCards: { label: string; value: number; filter: StatusFilter; color: string; bg: string; activeBg: string }[] = [
@@ -527,9 +526,15 @@ export default function LeadsPage() {
                     </div>
                 )}
 
-                {/* ── DATABASE TAB ── */}
+                {/* ── DATABASE ROW TAB ── */}
                 {activeTab === "database" && (
                     <div className="space-y-6">
+                        <button 
+                            onClick={() => setActiveTab("lists")}
+                            className="text-sm font-bold text-slate-400 hover:text-white flex items-center gap-2 mb-2 transition-colors"
+                        >
+                            ← Back to Lists
+                        </button>
                         {/* Pipeline Stats — click to filter, click again to reset */}
                         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                             {pipelineCards.map(card => {
