@@ -20,8 +20,11 @@ def parse_spintax(text: str) -> str:
             return random.choice(inner.split("|"))
         return match.group(0)
 
-    while re.search(r'\{[^{}]*\|[^{}]*\}', text):
+    max_iters = 20
+    iters = 0
+    while re.search(r'\{[^{}]*\|[^{}]*\}', text) and iters < max_iters:
         text = re.sub(r'\{([^{}]+)\}', smart_replace, text)
+        iters += 1
     return text
 
 
@@ -242,7 +245,9 @@ def _run_followup_inner(client, bot_username, bot_id, reporter):
 
         delay_days = campaign.get("followup_delay_days") or 2
         template = campaign.get("message_templates")
-        if not template: continue
+        if not template:
+            print(f"  Campaign '{campaign.get('name', '?')}' has no followup template — skipping.")
+            continue
 
         leads = reporter.client.table("leads") \
             .select("*") \

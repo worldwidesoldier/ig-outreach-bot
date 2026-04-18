@@ -4,7 +4,7 @@ from brain_reporter import BrainReporter
 from brain_reporter import is_ig_auth_error
 
 # ─── WARMUP PROTOCOL (based on BlackHatWorld research) ────────────────────────
-# The scheduler runs maintenance 3x per day (13h, 18h, 21h).
+# The scheduler runs maintenance 3x per day (11h, 17h, 22h ET).
 # warmup_day increments by 1 each run, so 3 increments = 1 real day.
 # Thresholds are set in scheduler runs (not calendar days):
 #
@@ -93,14 +93,22 @@ def _warmup_light_likes(client, username, reporter):
 
     try:
         feed = client.get_timeline_feed()
-        feed_items = feed if isinstance(feed, list) else feed.get("feed_items", [])
+        if isinstance(feed, list):
+            feed_items = feed
+        elif isinstance(feed, dict):
+            feed_items = feed.get("feed_items", [])
+        else:
+            feed_items = getattr(feed, "feed_items", None) or []
 
         liked = 0
         for item in feed_items:
             if liked >= likes_to_give:
                 break
             try:
-                media_id = item.get("media_or_ad", {}).get("id") or item.get("id")
+                if isinstance(item, dict):
+                    media_id = item.get("media_or_ad", {}).get("id") or item.get("id")
+                else:
+                    media_id = getattr(getattr(item, "media_or_ad", None), "id", None) or getattr(item, "id", None)
                 if media_id:
                     client.media_like(media_id)
                     liked += 1
@@ -244,14 +252,22 @@ def _recovery_micro_likes(client, username, reporter, max_likes=2):
 
     try:
         feed = client.get_timeline_feed()
-        feed_items = feed if isinstance(feed, list) else feed.get("feed_items", [])
+        if isinstance(feed, list):
+            feed_items = feed
+        elif isinstance(feed, dict):
+            feed_items = feed.get("feed_items", [])
+        else:
+            feed_items = getattr(feed, "feed_items", None) or []
 
         liked = 0
         for item in feed_items:
             if liked >= likes_to_give:
                 break
             try:
-                media_id = item.get("media_or_ad", {}).get("id") or item.get("id")
+                if isinstance(item, dict):
+                    media_id = item.get("media_or_ad", {}).get("id") or item.get("id")
+                else:
+                    media_id = getattr(getattr(item, "media_or_ad", None), "id", None) or getattr(item, "id", None)
                 if media_id:
                     client.media_like(media_id)
                     liked += 1

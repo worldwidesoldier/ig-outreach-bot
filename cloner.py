@@ -49,10 +49,13 @@ def clone_profile(target_bot_username, source_info, source_pic_url):
             pic_response = requests.get(source_pic_url, timeout=15)
             if pic_response.status_code == 200:
                 pic_path = f"/tmp/{target_bot_username}_avatar.jpg"
-                with open(pic_path, "wb") as f:
-                    f.write(pic_response.content)
-                bot_client.account_change_picture(pic_path)
-                os.remove(pic_path)
+                try:
+                    with open(pic_path, "wb") as f:
+                        f.write(pic_response.content)
+                    bot_client.account_change_picture(pic_path)
+                finally:
+                    if os.path.exists(pic_path):
+                        os.remove(pic_path)
             else:
                 print(f"  Could not download profile picture.")
 
@@ -100,41 +103,42 @@ def publish_post(target_bots, image_url, caption=""):
         print(f"❌ Download error: {e}")
         return
 
-    for i, bot_username in enumerate(target_bots):
-        print(f"[{i+1}/{len(target_bots)}] @{bot_username}")
-        reporter2 = BrainReporter()
-        try:
-            bot_data = reporter2.client.table("accounts").select("*").eq("username", bot_username).single().execute().data
-            if not bot_data or bot_data["status"] in ("CHALLENGE", "DEAD"):
-                print(f"  ⚠️  Skipping — status: {bot_data.get('status') if bot_data else 'not found'}")
-                continue
+    try:
+        for i, bot_username in enumerate(target_bots):
+            print(f"[{i+1}/{len(target_bots)}] @{bot_username}")
+            reporter2 = BrainReporter()
+            try:
+                bot_data = reporter2.client.table("accounts").select("*").eq("username", bot_username).single().execute().data
+                if not bot_data or bot_data["status"] in ("CHALLENGE", "DEAD"):
+                    print(f"  ⚠️  Skipping — status: {bot_data.get('status') if bot_data else 'not found'}")
+                    continue
 
-            client = get_client(
-                username=bot_data["username"],
-                password=bot_data["password"],
-                proxy=bot_data.get("proxy"),
-                two_factor_seed=bot_data.get("two_factor_seed"),
-                session_file=f"sessions/{bot_data['username']}.json",
-            )
+                client = get_client(
+                    username=bot_data["username"],
+                    password=bot_data["password"],
+                    proxy=bot_data.get("proxy"),
+                    two_factor_seed=bot_data.get("two_factor_seed"),
+                    session_file=f"sessions/{bot_data['username']}.json",
+                )
 
-            result = client.photo_upload(local_path, caption=caption)
-            print(f"  ✅ Posted: {result.pk}")
-            reporter2.log_activity(bot_username, "POST_PUBLISHED", f"Post {result.pk}: {caption[:50]}")
+                result = client.photo_upload(local_path, caption=caption)
+                print(f"  ✅ Posted: {result.pk}")
+                reporter2.log_activity(bot_username, "POST_PUBLISHED", f"Post {result.pk}: {caption[:50]}")
 
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-            from brain_reporter import is_ig_auth_error
-            reporter2.log_activity(bot_username, "POST_ERROR", str(e)[:100])
-            if is_ig_auth_error(e):
-                reporter2.report_status(bot_username, "CHALLENGE")
+            except Exception as e:
+                print(f"  ❌ Error: {e}")
+                from brain_reporter import is_ig_auth_error
+                reporter2.log_activity(bot_username, "POST_ERROR", str(e)[:100])
+                if is_ig_auth_error(e):
+                    reporter2.report_status(bot_username, "CHALLENGE")
 
-        if i < len(target_bots) - 1:
-            delay = random.randint(MIN_DELAY, MAX_DELAY)
-            print(f"\n  Waiting {delay//60}m{delay%60}s before next bot...\n")
-            time.sleep(delay)
-
-    if os.path.exists(local_path):
-        os.remove(local_path)
+            if i < len(target_bots) - 1:
+                delay = random.randint(MIN_DELAY, MAX_DELAY)
+                print(f"\n  Waiting {delay//60}m{delay%60}s before next bot...\n")
+                time.sleep(delay)
+    finally:
+        if local_path and os.path.exists(local_path):
+            os.remove(local_path)
 
     print(f"\n✅ Publishing complete.")
 

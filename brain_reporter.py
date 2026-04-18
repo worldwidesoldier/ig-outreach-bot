@@ -181,6 +181,10 @@ class BrainReporter:
         if not webhook_url:
             return  # No webhook configured — print-only mode
 
+        if not webhook_url.startswith("https://"):
+            print(f"⚠️ ALERT_WEBHOOK_URL must use HTTPS — skipping webhook to avoid credential exposure.")
+            return
+
         try:
             # Slack format (also works for Discord with /slack suffix)
             payload = _json.dumps({"text": full_message}).encode("utf-8")

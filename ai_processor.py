@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from brain_reporter import BrainReporter
 from dotenv import load_dotenv
@@ -25,7 +26,6 @@ class AILeadProcessor:
           -15  no full_name AND no bio (zero identity signals)
           -10  username contains 5+ consecutive digits (auto-generated pattern)
         """
-        import re
         score = 50  # Base score — neutral
 
         # ── Identity signals ──────────────────────────────────────────────────

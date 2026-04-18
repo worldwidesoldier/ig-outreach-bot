@@ -26,16 +26,31 @@ class InboxManager:
         try:
             threads = self.client.direct_threads(amount=50)  # Enough for 50-bot fleet
 
+            # Build thread map and collect replier PKs in one pass — avoids N+1 queries
+            thread_map = {}  # thread_id -> other_user_id
+            replier_pks = set()
             for thread in threads:
-                thread_id = thread.id
-                # Get the other user's PK (it's a list for group chats, but usually 1 for DMs)
                 other_user_id = None
                 for user in thread.users:
                     if str(user.pk) != str(self.client.user_id):
                         other_user_id = str(user.pk)
                         break
+                if not other_user_id:
+                    continue
+                thread_map[thread.id] = other_user_id
+                for msg in thread.messages:
+                    if msg.item_type == 'text' and str(msg.user_id) == other_user_id:
+                        replier_pks.add(other_user_id)
 
-                # Skip threads where we can't identify the other party
+            # Batch fetch all leads that replied — single query instead of one per message
+            lead_cache = {}
+            if replier_pks:
+                lead_res = self.reporter.client.table("leads").select("id, status, pk").in_("pk", list(replier_pks)).execute()
+                lead_cache = {str(l["pk"]): l for l in (lead_res.data or [])}
+
+            for thread in threads:
+                thread_id = thread.id
+                other_user_id = thread_map.get(thread_id)
                 if not other_user_id:
                     continue
 
@@ -48,7 +63,7 @@ class InboxManager:
                         "thread_id": thread_id,
                         "message_id": msg.id,
                         "sender_username": str(msg.user_id),
-                        "other_user_pk": other_user_id,  # Always store the lead's PK regardless of who sent
+                        "other_user_pk": other_user_id,
                         "text": msg.text,
                         "timestamp": msg.timestamp.isoformat()
                     }
@@ -59,17 +74,14 @@ class InboxManager:
                         if "duplicate" not in str(e).lower():
                             print(f"⚠️ Unexpected error upserting message: {e}")
 
-                    # 2. Detect Reply
-                    # If this message is FROM the other user (not our bot)
+                    # 2. Detect Reply — use cached lead data (no extra query)
                     if str(msg.user_id) == other_user_id:
-                        # Find lead by PK
-                        lead_res = self.reporter.client.table("leads").select("id, status").eq("pk", other_user_id).execute()
-                        if lead_res.data:
-                            lead = lead_res.data[0]
-                            if lead["status"] != "REPLIED":
-                                self.reporter.client.table("leads").update({"status": "REPLIED"}).eq("id", lead["id"]).execute()
-                                self.reporter.log_activity(self.bot_username, "REPLY_DETECTED", f"Lead @{other_user_id} replied! Thread: {thread_id}")
-                                print(f"✨ Verified reply from @{other_user_id}! Status set to REPLIED.")
+                        lead = lead_cache.get(other_user_id)
+                        if lead and lead["status"] != "REPLIED":
+                            self.reporter.client.table("leads").update({"status": "REPLIED"}).eq("id", lead["id"]).execute()
+                            self.reporter.log_activity(self.bot_username, "REPLY_DETECTED", f"Lead @{other_user_id} replied! Thread: {thread_id}")
+                            print(f"✨ Verified reply from @{other_user_id}! Status set to REPLIED.")
+                            lead_cache[other_user_id]["status"] = "REPLIED"  # Update cache to prevent duplicate updates
 
         except Exception as e:
             print(f"❌ Error syncing inbox for @{self.bot_username}: {e}")

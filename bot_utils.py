@@ -97,8 +97,8 @@ def get_client(username, password, proxy=None, two_factor_seed=None, session_fil
                         reporter.client.table("accounts").update({"challenge_type": "UNKNOWN"}).eq("username", username).execute()
                     except Exception:
                         pass
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ @{username} 2FA challenge handler error: {e}")
             return None
         cl.challenge_code_handler = _auto_challenge_handler
 
